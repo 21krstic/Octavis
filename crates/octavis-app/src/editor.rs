@@ -5,6 +5,12 @@ use std::collections::HashSet;
 use glam::IVec3;
 use octavis_core::{BlockId, History, SECTION_SIZE, Selection, World};
 
+/// Largest selection a drag may create. Keeps previews interactive and
+/// stops a runaway drag from exhausting memory; revisit for big builds.
+pub const MAX_SELECTION_CELLS: i64 = 500_000;
+/// Radius whose ball holds about `MAX_SELECTION_CELLS` cells.
+pub const MAX_SPHERE_RADIUS: f32 = 49.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectMode {
     Replace,
@@ -19,12 +25,18 @@ pub struct Editor {
     pub selection: Selection,
     /// Sections whose mesh must be rebuilt before the next draw.
     dirty: HashSet<IVec3>,
+    selection_dirty: bool,
 }
 
 impl Editor {
     pub fn new(world: World) -> Self {
         let dirty = world.sections().map(|(p, _)| p).collect();
-        Self { world, history: History::new(), selection: Selection::new(), dirty }
+        Self { world, history: History::new(), selection: Selection::new(), dirty, selection_dirty: true }
+    }
+
+    /// True if the selection changed since the last call.
+    pub fn take_selection_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.selection_dirty)
     }
 
     pub fn take_dirty(&mut self) -> Vec<IVec3> {
@@ -77,24 +89,42 @@ impl Editor {
     }
 
     pub fn undo(&mut self) {
-        for p in self.history.undo(&mut self.world) {
-            self.mark_dirty(p);
-        }
+        let u = self.history.undo(&mut self.world, &mut self.selection);
+        self.after_undo(u);
     }
 
     pub fn redo(&mut self) {
-        for p in self.history.redo(&mut self.world) {
-            self.mark_dirty(p);
-        }
+        let u = self.history.redo(&mut self.world, &mut self.selection);
+        self.after_undo(u);
     }
 
-    pub fn apply_selection(&mut self, mode: SelectMode, new: &Selection) {
-        match mode {
-            SelectMode::Replace => self.selection = new.clone(),
-            SelectMode::Add => self.selection.union(new),
-            SelectMode::Subtract => self.selection.subtract(new),
-            SelectMode::Intersect => self.selection.intersect(new),
+    fn after_undo(&mut self, u: octavis_core::Undone) {
+        for p in u.cells {
+            self.mark_dirty(p);
         }
+        self.selection_dirty |= u.selection_changed;
+    }
+
+    /// Combines `new` into the selection per `mode` as one undoable step.
+    pub fn apply_selection(&mut self, mode: SelectMode, new: &Selection) {
+        let mut result = self.selection.clone();
+        match mode {
+            SelectMode::Replace => result = new.clone(),
+            SelectMode::Add => result.union(new),
+            SelectMode::Subtract => result.subtract(new),
+            SelectMode::Intersect => result.intersect(new),
+        }
+        let delta = self.selection.delta_to(&result);
+        if delta.is_empty() {
+            return;
+        }
+        self.selection = result;
+        self.history.record_selection(delta);
+        self.selection_dirty = true;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.apply_selection(SelectMode::Replace, &Selection::new());
     }
 }
 
@@ -173,5 +203,30 @@ mod tests {
         assert_eq!(e.selection.len(), 2);
         e.apply_selection(SelectMode::Replace, &Selection::new());
         assert!(e.selection.is_empty());
+    }
+
+    #[test]
+    fn selection_changes_undo_and_flag_overlay() {
+        let (mut e, _) = editor();
+        e.take_selection_dirty();
+        e.apply_selection(SelectMode::Replace, &Selection::cuboid(IVec3::ZERO, IVec3::ONE));
+        assert!(e.take_selection_dirty());
+        e.clear_selection();
+        assert!(e.selection.is_empty());
+        e.undo();
+        assert_eq!(e.selection.len(), 8);
+        assert!(e.take_selection_dirty());
+        e.undo();
+        assert!(e.selection.is_empty());
+        e.redo();
+        assert_eq!(e.selection.len(), 8);
+    }
+
+    #[test]
+    fn selecting_nothing_new_records_no_history() {
+        let (mut e, _) = editor();
+        e.apply_selection(SelectMode::Add, &Selection::new());
+        e.clear_selection();
+        assert!(!e.history.can_undo());
     }
 }

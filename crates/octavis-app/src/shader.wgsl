@@ -34,8 +34,18 @@ fn vs_main(in: VertexIn) -> VertexOut {
 // with no face shading or AO.
 @vertex
 fn vs_overlay(in: VertexIn) -> VertexOut {
+    var normals = array<vec3<f32>, 6>(
+        vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(-1.0, 0.0, 0.0),
+        vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, -1.0, 0.0),
+        vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0, 0.0, -1.0),
+    );
+    // Lift the face off the block surface by an amount that grows with
+    // distance, since depth precision shrinks with distance.
+    let view_distance = (globals.view_proj * vec4<f32>(in.position, 1.0)).w;
+    let lifted = in.position + normals[in.face] * (0.002 + 0.0007 * view_distance);
+
     var out: VertexOut;
-    out.clip = globals.view_proj * vec4<f32>(in.position, 1.0);
+    out.clip = globals.view_proj * vec4<f32>(lifted, 1.0);
     out.color = globals.palette[in.block & 255u];
     return out;
 }

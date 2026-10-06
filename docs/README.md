@@ -63,8 +63,8 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 ## Status
 
 Milestone 1 done (core grid, mesher, rendering, orbit camera).
-Milestone 2 built, **awaiting manual QA**: pencil (place/Ctrl-break, drag strokes), select box/sphere/wand with replace/add/subtract/intersect, fill/delete selection, undo/redo (Ctrl+Z / Ctrl+Y), hover + selection overlays.
-Known limits: selection changes are not undoable; overlay palette slots 250-255 cap real block ids at 250 (placeholder palette); pencil only places against existing blocks (no ground-plane placement).
+Milestone 2 built, QA round 1 fixes applied, **awaiting QA round 2**: pencil (stroke locked to the clicked face's plane), select box / sphere / wand (wand ignores air, optional diagonals), selection changes are undoable, axis gizmo + origin axes, selection size caps (500k cells; sphere radius 49; wand 200k).
+Known limits: overlay palette slots 250-255 cap real block ids at 250 (placeholder palette); pencil only starts against existing blocks; box corners are hover-hit based with a horizontal-plane fallback in open air; undo memory is uncapped (see open decisions).
 
 ## Build order (each step leaves a working app)
 

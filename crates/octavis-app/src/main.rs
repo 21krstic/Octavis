@@ -1,6 +1,8 @@
 mod app;
 mod camera;
 mod editor;
+mod gizmo;
+mod picking;
 mod render;
 mod scene;
 

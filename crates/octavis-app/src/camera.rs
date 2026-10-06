@@ -19,10 +19,17 @@ impl Camera {
         self.target + Vec3::new(cy * cp, sp, sy * cp) * self.distance
     }
 
+    pub fn view(&self) -> Mat4 {
+        Mat4::look_at_rh(self.eye(), self.target, Vec3::Y)
+    }
+
+    pub fn forward(&self) -> Vec3 {
+        (self.target - self.eye()).normalize()
+    }
+
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
-        let view = Mat4::look_at_rh(self.eye(), self.target, Vec3::Y);
         let proj = Mat4::perspective_rh(60f32.to_radians(), aspect.max(0.01), 0.1, 2000.0);
-        proj * view
+        proj * self.view()
     }
 
     /// World-space ray through a point in the viewport. `pos` is in points
