@@ -146,7 +146,15 @@ pub fn init(render_state: &egui_wgpu::RenderState) {
                     wgpu::CompareFunction::LessEqual
                 }),
                 stencil: Default::default(),
-                bias: Default::default(),
+                // Overlays pull slightly toward the camera so coplanar faces
+                // win the depth test. Negative = closer; the constant is in
+                // units of the depth format's resolution, so it scales with
+                // distance, unlike a world-space lift.
+                bias: if solid {
+                    Default::default()
+                } else {
+                    wgpu::DepthBiasState { constant: -8, slope_scale: -1.5, clamp: 0.0 }
+                },
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,

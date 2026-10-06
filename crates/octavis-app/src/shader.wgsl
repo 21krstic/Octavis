@@ -39,10 +39,10 @@ fn vs_overlay(in: VertexIn) -> VertexOut {
         vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, -1.0, 0.0),
         vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0, 0.0, -1.0),
     );
-    // Lift the face off the block surface by an amount that grows with
-    // distance, since depth precision shrinks with distance.
-    let view_distance = (globals.view_proj * vec4<f32>(in.position, 1.0)).w;
-    let lifted = in.position + normals[in.face] * (0.002 + 0.0007 * view_distance);
+    // Z-fighting is handled by the pipeline's depth bias. This lift is kept
+    // tiny on purpose: each face moves along its own normal, so a large lift
+    // opens a visible gap at exposed block edges.
+    let lifted = in.position + normals[in.face] * 0.0005;
 
     var out: VertexOut;
     out.clip = globals.view_proj * vec4<f32>(lifted, 1.0);

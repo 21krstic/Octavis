@@ -24,10 +24,20 @@ enum Tool {
     Wand,
 }
 
+/// How a pencil stroke chooses cells while the button is held.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StrokeMode {
+    /// Follows whatever surface is under the cursor each frame.
+    Free,
+    /// Locked to the plane of the face first clicked: a tap places exactly
+    /// one block and strokes paint flat, but feel less direct than Free.
+    PlaneLocked,
+}
+
 /// What the current left-button press is doing.
 enum Drag {
-    /// Locked to one plane so a tap places one block and strokes paint flat.
-    Stroke { last: Option<IVec3>, axis: usize, layer: i32 },
+    /// `plane` is `(axis, layer)` when the stroke is plane-locked.
+    Stroke { last: Option<IVec3>, plane: Option<(usize, i32)> },
     Box { anchor: IVec3 },
     Sphere { center: IVec3 },
 }
@@ -38,6 +48,7 @@ pub struct OctavisApp {
     editor: Editor,
     camera: Camera,
     tool: Tool,
+    stroke_mode: StrokeMode,
     block: BlockId,
     sel_mode: SelectMode,
     wand_diagonal: bool,
@@ -63,6 +74,7 @@ impl OctavisApp {
             editor: Editor::new(world),
             camera: Camera::new(Vec3::new(0.0, 4.0, 0.0)),
             tool: Tool::Pencil,
+            stroke_mode: StrokeMode::Free,
             block,
             sel_mode: SelectMode::Replace,
             wand_diagonal: true,
@@ -143,6 +155,11 @@ impl OctavisApp {
         ui.selectable_value(&mut self.tool, Tool::SelectBox, "Select box");
         ui.selectable_value(&mut self.tool, Tool::SelectSphere, "Select sphere");
         ui.selectable_value(&mut self.tool, Tool::Wand, "Wand (same block)");
+        if self.tool == Tool::Pencil {
+            ui.label("Stroke mode");
+            ui.selectable_value(&mut self.stroke_mode, StrokeMode::Free, "Free");
+            ui.selectable_value(&mut self.stroke_mode, StrokeMode::PlaneLocked, "Plane-locked");
+        }
         if self.tool == Tool::Wand {
             ui.checkbox(&mut self.wand_diagonal, "Include diagonals");
         }
@@ -257,7 +274,7 @@ impl OctavisApp {
         let hit = ray.and_then(|(o, d)| raycast(&self.editor.world, o, d, MAX_PICK_DISTANCE));
 
         let target = match &self.drag {
-            Some(Drag::Stroke { axis, layer, .. }) => {
+            Some(Drag::Stroke { plane: Some((axis, layer)), .. }) => {
                 ray.and_then(|(o, d)| ray_layer_cell(o, d, *axis, *layer, MAX_PICK_DISTANCE))
             }
             // Box corners prefer a hit block, else the horizontal plane
@@ -266,7 +283,9 @@ impl OctavisApp {
                 ray.and_then(|(o, d)| ray_layer_cell(o, d, 1, anchor.y, MAX_PICK_DISTANCE))
             }),
             Some(Drag::Sphere { .. }) => None,
-            None => hit.and_then(|h| self.hover_cell(&h, ctrl)),
+            Some(Drag::Stroke { plane: None, .. }) | None => {
+                hit.and_then(|h| self.hover_cell(&h, ctrl))
+            }
         };
 
         let (pressed, down, released) = ui.input(|i| {
@@ -305,11 +324,14 @@ impl OctavisApp {
         match self.tool {
             Tool::Pencil => {
                 let Some(target) = self.hover_cell(hit, ctrl) else { return };
-                // Lock to the plane of the face that was clicked.
-                let axis = (0..3).find(|&a| hit.normal[a] != 0).unwrap_or(1);
+                // Plane-locked strokes use the plane of the face that was clicked.
+                let plane = (self.stroke_mode == StrokeMode::PlaneLocked).then(|| {
+                    let axis = (0..3).find(|&a| hit.normal[a] != 0).unwrap_or(1);
+                    (axis, target[axis])
+                });
                 self.editor.begin_edit();
                 self.editor.set_block(target, if ctrl { BlockId::AIR } else { self.block });
-                self.drag = Some(Drag::Stroke { last: Some(target), axis, layer: target[axis] });
+                self.drag = Some(Drag::Stroke { last: Some(target), plane });
             }
             Tool::SelectBox => self.drag = Some(Drag::Box { anchor: hit.pos }),
             Tool::SelectSphere => self.drag = Some(Drag::Sphere { center: hit.pos }),

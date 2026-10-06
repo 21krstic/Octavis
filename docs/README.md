@@ -63,8 +63,19 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 ## Status
 
 Milestone 1 done (core grid, mesher, rendering, orbit camera).
-Milestone 2 built, QA round 1 fixes applied, **awaiting QA round 2**: pencil (stroke locked to the clicked face's plane), select box / sphere / wand (wand ignores air, optional diagonals), selection changes are undoable, axis gizmo + origin axes, selection size caps (500k cells; sphere radius 49; wand 200k).
-Known limits: overlay palette slots 250-255 cap real block ids at 250 (placeholder palette); pencil only starts against existing blocks; box corners are hover-hit based with a horizontal-plane fallback in open air; undo memory is uncapped (see open decisions).
+Milestone 2 done pending final sign-off: pencil (Free stroke mode default; Plane-locked mode kept as an option), select box / sphere / wand (wand ignores air, optional diagonals), undoable selection changes, axis gizmo + origin axes, selection size caps (500k cells; sphere radius 49; wand 200k).
+
+## Known issues / backlog (from QA)
+
+- **Box select** needs a real fix: corners depend on hovering existing blocks (open-air fallback is only the anchor's horizontal plane). Needs a proper way to define two points in space (e.g. drag a base rectangle, then extrude height).
+- **Large sphere selections lag**: the selection overlay is rebuilt (temp world + meshing) every frame of a drag. Fix by incremental/cached overlay meshing or a cheaper overlay for big selections.
+- **Pencil Free mode**: a single tap can place several blocks in a row (the new block becomes the hit surface on following frames). Accepted for now; Plane-locked mode avoids it but felt worse for line drawing.
+- **Selection overlay is meshed like solid blocks**: from inside a selection it is back-face culled like solid blocks. Not wrong, just noted; revisit if it confuses.
+- **No antialiasing** yet (eframe `multisampling` / MSAA pipeline sample counts). Deferred to a later patch.
+- Overlay depth: coplanar overlay faces use a pipeline depth bias (-8, slope -1.5) plus a 0.0005 lift; a larger lift made block edges peek through at exposed edges.
+- Overlay palette slots 250-255 cap real block ids at 250 (placeholder palette).
+- Pencil only starts against existing blocks.
+- Undo memory is uncapped (see open decisions).
 
 ## Build order (each step leaves a working app)
 
