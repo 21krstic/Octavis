@@ -1,0 +1,9 @@
+[package]
+name = "octavis-mesh"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+octavis-core = { path = "../octavis-core" }
+glam.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
