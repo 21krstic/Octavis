@@ -5,6 +5,40 @@ use glam::IVec3;
 use crate::block::BlockId;
 use crate::world::World;
 
+/// Which neighbours the wand follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Connectivity {
+    /// The 6 face neighbours.
+    Face,
+    /// All 26 neighbours, including edges and corners.
+    Full,
+}
+
+impl Connectivity {
+    fn offsets(self) -> impl Iterator<Item = IVec3> {
+        (-1..=1)
+            .flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).map(move |z| IVec3::new(x, y, z))))
+            .filter(move |d| {
+                let n = d.abs().element_sum();
+                n != 0 && (self == Connectivity::Full || n == 1)
+            })
+    }
+}
+
+/// A change to a selection, stored sparsely so undo history stays small
+/// when only part of a large selection changes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SelectionDelta {
+    pub added: Vec<IVec3>,
+    pub removed: Vec<IVec3>,
+}
+
+impl SelectionDelta {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
 /// A set of selected cells with boolean combination. Stored sparsely, so
 /// it works for any shape; fine at schematic scale.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -48,27 +82,52 @@ impl Selection {
         Self { cells }
     }
 
-    /// 6-connected flood fill of cells holding the same block as `start`
-    /// (air counts as a block, so it selects enclosed pockets), stopping at
-    /// `limit` cells so a click in open air cannot run away.
-    pub fn wand(world: &World, start: IVec3, limit: usize) -> Self {
+    /// Flood fill of connected cells holding the same block as `start`,
+    /// stopping at `limit` cells. Starting on air selects nothing, so a
+    /// click in open space cannot select the whole sky.
+    pub fn wand(world: &World, start: IVec3, limit: usize, connectivity: Connectivity) -> Self {
         let target = world.get(start);
+        if target == BlockId::AIR {
+            return Self::new();
+        }
         let mut cells = HashSet::new();
         let mut queue = VecDeque::from([start]);
         cells.insert(start);
-        while let Some(p) = queue.pop_front() {
-            if cells.len() >= limit {
-                break;
-            }
-            for d in [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z] {
+        'fill: while let Some(p) = queue.pop_front() {
+            for d in connectivity.offsets() {
                 let n = p + d;
                 if !cells.contains(&n) && world.get(n) == target {
                     cells.insert(n);
+                    if cells.len() >= limit {
+                        break 'fill;
+                    }
                     queue.push_back(n);
                 }
             }
         }
         Self { cells }
+    }
+
+    /// The minimal change that turns `self` into `other`.
+    pub fn delta_to(&self, other: &Selection) -> SelectionDelta {
+        SelectionDelta {
+            added: other.cells.difference(&self.cells).copied().collect(),
+            removed: self.cells.difference(&other.cells).copied().collect(),
+        }
+    }
+
+    pub fn apply_delta(&mut self, delta: &SelectionDelta) {
+        for c in &delta.removed {
+            self.cells.remove(c);
+        }
+        self.cells.extend(delta.added.iter().copied());
+    }
+
+    pub fn revert_delta(&mut self, delta: &SelectionDelta) {
+        for c in &delta.added {
+            self.cells.remove(c);
+        }
+        self.cells.extend(delta.removed.iter().copied());
     }
 
     pub fn union(&mut self, other: &Selection) {
@@ -160,6 +219,14 @@ mod tests {
         assert!((240..300).contains(&s.len()), "{}", s.len());
     }
 
+    fn two_diagonal_stones() -> World {
+        let mut w = World::new();
+        let stone = w.blocks.intern(BlockState::new("stone"));
+        w.set(IVec3::ZERO, stone);
+        w.set(IVec3::new(1, 1, 1), stone); // corner-adjacent only
+        w
+    }
+
     #[test]
     fn wand_selects_connected_same_block_only() {
         let mut w = World::new();
@@ -171,16 +238,49 @@ mod tests {
         w.set(IVec3::new(1, 1, 0), dirt);
         w.set(IVec3::new(10, 0, 0), stone); // disconnected
 
-        let s = Selection::wand(&w, IVec3::ZERO, 1000);
+        let s = Selection::wand(&w, IVec3::ZERO, 1000, Connectivity::Face);
         assert_eq!(s.len(), 3);
         assert!(!s.contains(IVec3::new(10, 0, 0)));
         assert!(!s.contains(IVec3::new(1, 1, 0)));
     }
 
     #[test]
-    fn wand_respects_limit_in_open_air() {
-        let w = World::new();
-        let s = Selection::wand(&w, IVec3::ZERO, 100);
-        assert!(s.len() >= 100 && s.len() < 200);
+    fn wand_diagonal_connectivity() {
+        let w = two_diagonal_stones();
+        assert_eq!(Selection::wand(&w, IVec3::ZERO, 100, Connectivity::Face).len(), 1);
+        assert_eq!(Selection::wand(&w, IVec3::ZERO, 100, Connectivity::Full).len(), 2);
+    }
+
+    #[test]
+    fn wand_never_selects_air() {
+        let w = two_diagonal_stones();
+        assert!(Selection::wand(&w, IVec3::new(5, 5, 5), 100, Connectivity::Full).is_empty());
+    }
+
+    #[test]
+    fn wand_respects_limit() {
+        let mut w = World::new();
+        let stone = w.blocks.intern(BlockState::new("stone"));
+        for x in 0..50 {
+            for z in 0..50 {
+                w.set(IVec3::new(x, 0, z), stone);
+            }
+        }
+        let s = Selection::wand(&w, IVec3::ZERO, 100, Connectivity::Full);
+        assert_eq!(s.len(), 100);
+    }
+
+    #[test]
+    fn delta_roundtrip() {
+        let a = Selection::cuboid(IVec3::ZERO, IVec3::new(3, 0, 0));
+        let b = Selection::cuboid(IVec3::new(2, 0, 0), IVec3::new(5, 0, 0));
+        let d = a.delta_to(&b);
+        assert_eq!((d.added.len(), d.removed.len()), (2, 2));
+        let mut s = a.clone();
+        s.apply_delta(&d);
+        assert_eq!(s, b);
+        s.revert_delta(&d);
+        assert_eq!(s, a);
+        assert!(a.delta_to(&a).is_empty());
     }
 }
