@@ -1,0 +1,11 @@
+[package]
+name = "octavis-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+octavis-core = { path = "../octavis-core" }
+octavis-mesh = { path = "../octavis-mesh" }
+glam.workspace = true
+bytemuck = "1"
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }

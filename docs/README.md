@@ -52,6 +52,18 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 
 **Wedge vs Axiom:** standalone (zero mod conflicts), headless CLI batch jobs, external import/export, node-graph generators, non-destructive layers, version-decoupled formats, works without MC.
 
+## Dev notes
+
+- Crates: `octavis-core` (voxels, no deps but glam), `octavis-mesh` (CPU meshing: culled + per-vertex AO), `octavis-app` (eframe + wgpu viewport).
+- Windows: run cargo from **PowerShell**, not Git Bash (Git's `link` shadows MSVC `link.exe`). Needs MSVC Build Tools.
+- Vulkan crashes at startup on the dev machine; the app defaults to DX12 on Windows (`WGPU_BACKEND` overrides).
+- First full build is slow (~13 min, deps compile at opt-level 3); incremental is seconds.
+- Palette in the shader is a 256-entry placeholder (block id & 255), replaced by texture packs at milestone 7.
+
+## Status
+
+Milestone 1 done: core grid + palette storage, culled mesher, cube rendering with orbit camera (right-drag orbit, middle/shift+right pan, wheel zoom) over a demo scene. Next: milestone 2 (selection + undo/redo).
+
 ## Build order (each step leaves a working app)
 
 1. Core grid + palette storage + mesher + cube rendering
