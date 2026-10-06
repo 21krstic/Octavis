@@ -62,7 +62,9 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 
 ## Status
 
-Milestone 1 done: core grid + palette storage, culled mesher, cube rendering with orbit camera (right-drag orbit, middle/shift+right pan, wheel zoom) over a demo scene. Next: milestone 2 (selection + undo/redo).
+Milestone 1 done (core grid, mesher, rendering, orbit camera).
+Milestone 2 built, **awaiting manual QA**: pencil (place/Ctrl-break, drag strokes), select box/sphere/wand with replace/add/subtract/intersect, fill/delete selection, undo/redo (Ctrl+Z / Ctrl+Y), hover + selection overlays.
+Known limits: selection changes are not undoable; overlay palette slots 250-255 cap real block ids at 250 (placeholder palette); pencil only places against existing blocks (no ground-plane placement).
 
 ## Build order (each step leaves a working app)
 

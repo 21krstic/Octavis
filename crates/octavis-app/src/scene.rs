@@ -9,6 +9,9 @@ pub fn demo_world() -> World {
     let dirt = w.blocks.intern(BlockState::new("minecraft:dirt"));
     let stone = w.blocks.intern(BlockState::new("minecraft:stone"));
     let planks = w.blocks.intern(BlockState::new("minecraft:oak_planks"));
+    // Interned so they appear in the block picker.
+    w.blocks.intern(BlockState::new("minecraft:sand"));
+    w.blocks.intern(BlockState::new("minecraft:bricks"));
 
     for x in -24..24 {
         for z in -24..24 {

@@ -1,5 +1,6 @@
 mod app;
 mod camera;
+mod editor;
 mod render;
 mod scene;
 

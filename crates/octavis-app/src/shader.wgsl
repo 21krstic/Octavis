@@ -14,7 +14,7 @@ struct VertexIn {
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) color: vec4<f32>,
 };
 
 @vertex
@@ -26,11 +26,21 @@ fn vs_main(in: VertexIn) -> VertexOut {
     var out: VertexOut;
     out.clip = globals.view_proj * vec4<f32>(in.position, 1.0);
     let base = globals.palette[in.block & 255u].rgb;
-    out.color = base * face_light[in.face] * ao_light[in.ao];
+    out.color = vec4<f32>(base * face_light[in.face] * ao_light[in.ao], 1.0);
+    return out;
+}
+
+// Overlays (selection, hover) are flat translucent colour from the palette,
+// with no face shading or AO.
+@vertex
+fn vs_overlay(in: VertexIn) -> VertexOut {
+    var out: VertexOut;
+    out.clip = globals.view_proj * vec4<f32>(in.position, 1.0);
+    out.color = globals.palette[in.block & 255u];
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    return in.color;
 }
