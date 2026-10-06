@@ -1,0 +1,7 @@
+[package]
+name = "octavis-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam.workspace = true
