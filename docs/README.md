@@ -65,6 +65,9 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 Milestone 1 done (core grid, mesher, rendering, orbit camera).
 Milestone 2 done pending final sign-off: pencil (Free stroke mode default; Plane-locked mode kept as an option), select box / sphere / wand (wand ignores air, optional diagonals), undoable selection changes, axis gizmo + origin axes, selection size caps (500k cells; sphere radius 49; wand 200k).
 
+Milestone 3 built, in QA: Brush tool (sphere/cube/cylinder; paint/replace, splatter, overlay, smooth, erode, dilate, erase). Mask expression language (`air solid exposed surface y>=5 <block> ! & | ( )`) and weighted patterns (`70%stone,30%dirt`) live in core `brush.rs`; strokes dab along a line so fast movement leaves no gaps. The pencil bridges fast cursor movement the same way.
+Not yet in milestone 3: stamp shape (waits for stamps/prefabs), falloff, block properties in patterns/masks (`oak_stairs[facing=north]`), noise/Y-gradient patterns.
+
 ## Known issues / backlog (from QA)
 
 - **Box select** needs a real fix: corners depend on hovering existing blocks (open-air fallback is only the anchor's horizontal plane). Needs a proper way to define two points in space (e.g. drag a base rectangle, then extrude height).

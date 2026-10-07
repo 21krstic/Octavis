@@ -3,7 +3,10 @@ use std::sync::Mutex;
 use eframe::egui::{self, Key, PointerButton};
 use eframe::egui_wgpu;
 use glam::{IVec3, Vec2, Vec3};
-use octavis_core::{BlockId, Connectivity, RayHit, Selection, World, raycast};
+use octavis_core::{
+    BlockId, Brush, BrushMode, Connectivity, Mask, Pattern, RayHit, Selection, Shape, World,
+    raycast,
+};
 use octavis_mesh::Mesh;
 
 use crate::camera::Camera;
@@ -22,9 +25,94 @@ const MAX_BRIDGE: i32 = 32;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Pencil,
+    Brush,
     SelectBox,
     SelectSphere,
     Wand,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShapeKind {
+    Sphere,
+    Cube,
+    Cylinder,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModeKind {
+    Paint,
+    Splatter,
+    Overlay,
+    Smooth,
+    Erode,
+    Dilate,
+    Erase,
+}
+
+impl ModeKind {
+    const ALL: [ModeKind; 7] = [
+        ModeKind::Paint,
+        ModeKind::Splatter,
+        ModeKind::Overlay,
+        ModeKind::Smooth,
+        ModeKind::Erode,
+        ModeKind::Dilate,
+        ModeKind::Erase,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            ModeKind::Paint => "Paint / replace",
+            ModeKind::Splatter => "Splatter",
+            ModeKind::Overlay => "Overlay (on top)",
+            ModeKind::Smooth => "Smooth",
+            ModeKind::Erode => "Erode",
+            ModeKind::Dilate => "Dilate",
+            ModeKind::Erase => "Erase",
+        }
+    }
+}
+
+/// Brush options as edited in the panel. The mask and pattern stay text
+/// until a stroke starts, so half-typed names never reach the block table.
+struct BrushSettings {
+    shape: ShapeKind,
+    radius: f32,
+    half_height: i32,
+    mode: ModeKind,
+    density: f32,
+    mask_text: String,
+    /// Empty means "the block selected in the Block list".
+    pattern_text: String,
+}
+
+impl BrushSettings {
+    fn new() -> Self {
+        Self {
+            shape: ShapeKind::Sphere,
+            radius: 3.0,
+            half_height: 3,
+            mode: ModeKind::Paint,
+            density: 0.3,
+            mask_text: String::new(),
+            pattern_text: String::new(),
+        }
+    }
+
+    fn shape(&self) -> Shape {
+        match self.shape {
+            ShapeKind::Sphere => Shape::Sphere { radius: self.radius },
+            ShapeKind::Cube => Shape::Cube { half: self.radius.round() as i32 },
+            ShapeKind::Cylinder => {
+                Shape::Cylinder { radius: self.radius, half_height: self.half_height }
+            }
+        }
+    }
+
+    /// Distance between dabs along a stroke: about half the brush size.
+    fn dab_spacing(&self) -> f32 {
+        (self.radius * 0.5).round().max(1.0)
+    }
 }
 
 /// How a pencil stroke chooses cells while the button is held.
@@ -43,6 +131,8 @@ enum Drag {
     Stroke { last: Option<IVec3>, plane: Option<(usize, i32)> },
     Box { anchor: IVec3 },
     Sphere { center: IVec3 },
+    /// `last` is the centre of the previous dab.
+    Brush { last: IVec3, brush: Box<Brush>, spacing: f32 },
 }
 
 type Ray = (Vec3, Vec3);
@@ -52,6 +142,7 @@ pub struct OctavisApp {
     camera: Camera,
     tool: Tool,
     stroke_mode: StrokeMode,
+    brush: BrushSettings,
     block: BlockId,
     sel_mode: SelectMode,
     wand_diagonal: bool,
@@ -64,6 +155,8 @@ pub struct OctavisApp {
     overlay_dirty: bool,
     /// Cell under the cursor last frame, for the status bar.
     hover: Option<IVec3>,
+    /// Cells last sent as the hover overlay, to skip identical re-uploads.
+    sent_hover: Vec<IVec3>,
 }
 
 impl OctavisApp {
@@ -78,6 +171,7 @@ impl OctavisApp {
             camera: Camera::new(Vec3::new(0.0, 4.0, 0.0)),
             tool: Tool::Pencil,
             stroke_mode: StrokeMode::Free,
+            brush: BrushSettings::new(),
             block,
             sel_mode: SelectMode::Replace,
             wand_diagonal: true,
@@ -88,7 +182,92 @@ impl OctavisApp {
             palette_dirty: true,
             overlay_dirty: true,
             hover: None,
+            sent_hover: Vec::new(),
         }
+    }
+
+    /// Builds the brush for a stroke from the panel text. `erase` (Ctrl)
+    /// swaps the mode for Erase and ignores the pattern.
+    fn build_brush(&mut self, erase: bool) -> Result<Brush, String> {
+        let mask = Mask::parse(&self.brush.mask_text)?;
+        let (mode, pattern) = if erase || self.brush.mode == ModeKind::Erase {
+            (BrushMode::Erase, Pattern::Single(BlockId::AIR))
+        } else {
+            let pattern = if self.brush.pattern_text.trim().is_empty() {
+                Pattern::Single(self.block)
+            } else {
+                let before = self.editor.world.blocks.len();
+                let p = Pattern::parse(&self.brush.pattern_text, &mut self.editor.world.blocks)?;
+                self.palette_dirty |= self.editor.world.blocks.len() != before;
+                p
+            };
+            let mode = match self.brush.mode {
+                ModeKind::Splatter => BrushMode::Splatter { density: self.brush.density },
+                ModeKind::Overlay => BrushMode::Overlay,
+                ModeKind::Smooth => BrushMode::Smooth,
+                ModeKind::Erode => BrushMode::Erode,
+                ModeKind::Dilate => BrushMode::Dilate,
+                ModeKind::Paint | ModeKind::Erase => BrushMode::Paint,
+            };
+            (mode, pattern)
+        };
+        Ok(Brush { shape: self.brush.shape(), mask, pattern, mode, seed: 0 })
+    }
+
+    fn brush_panel(&mut self, ui: &mut egui::Ui) {
+        let b = &mut self.brush;
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut b.shape, ShapeKind::Sphere, "Sphere");
+            ui.selectable_value(&mut b.shape, ShapeKind::Cube, "Cube");
+            ui.selectable_value(&mut b.shape, ShapeKind::Cylinder, "Cylinder");
+        });
+        ui.add(egui::Slider::new(&mut b.radius, 0.0..=16.0).step_by(0.5).text("Radius"));
+        if b.shape == ShapeKind::Cylinder {
+            ui.add(egui::Slider::new(&mut b.half_height, 0..=16).text("Half height"));
+        }
+        egui::ComboBox::from_label("Mode").selected_text(b.mode.label()).show_ui(ui, |ui| {
+            for m in ModeKind::ALL {
+                ui.selectable_value(&mut b.mode, m, m.label());
+            }
+        });
+        if b.mode == ModeKind::Splatter {
+            ui.add(egui::Slider::new(&mut b.density, 0.05..=1.0).text("Density"));
+        }
+
+        ui.label("Mask (empty = anywhere)");
+        ui.add(
+            egui::TextEdit::singleline(&mut b.mask_text)
+                .hint_text("e.g. stone | dirt & y<10")
+                .desired_width(f32::INFINITY),
+        );
+        match Mask::parse(&b.mask_text) {
+            Err(e) => {
+                ui.colored_label(egui::Color32::from_rgb(255, 110, 90), e);
+            }
+            Ok(m) => {
+                let unknown = m.unknown_names(&self.editor.world.blocks);
+                if !unknown.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 170, 60),
+                        format!("Not in the scene yet: {}", unknown.join(", ")),
+                    );
+                }
+            }
+        }
+        ui.small("air solid exposed surface y>=5 <block>  ! & | ( )");
+
+        ui.label("Pattern (empty = selected block)");
+        ui.add(
+            egui::TextEdit::singleline(&mut b.pattern_text)
+                .hint_text("e.g. 70%stone, 30%dirt")
+                .desired_width(f32::INFINITY),
+        );
+        if let Err(e) = Pattern::validate(&b.pattern_text) {
+            if !b.pattern_text.trim().is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(255, 110, 90), e);
+            }
+        }
+        ui.small("Ctrl = erase");
     }
 
     fn mesh_uploads(&mut self) -> Vec<(IVec3, Option<Mesh>)> {
@@ -155,6 +334,7 @@ impl OctavisApp {
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Tools");
         ui.selectable_value(&mut self.tool, Tool::Pencil, "Pencil (place / Ctrl: break)");
+        ui.selectable_value(&mut self.tool, Tool::Brush, "Brush");
         ui.selectable_value(&mut self.tool, Tool::SelectBox, "Select box");
         ui.selectable_value(&mut self.tool, Tool::SelectSphere, "Select sphere");
         ui.selectable_value(&mut self.tool, Tool::Wand, "Wand (same block)");
@@ -162,6 +342,10 @@ impl OctavisApp {
             ui.label("Stroke mode");
             ui.selectable_value(&mut self.stroke_mode, StrokeMode::Free, "Free");
             ui.selectable_value(&mut self.stroke_mode, StrokeMode::PlaneLocked, "Plane-locked");
+        }
+        if self.tool == Tool::Brush {
+            ui.separator();
+            self.brush_panel(ui);
         }
         if self.tool == Tool::Wand {
             ui.checkbox(&mut self.wand_diagonal, "Include diagonals");
@@ -286,6 +470,7 @@ impl OctavisApp {
                 ray.and_then(|(o, d)| ray_layer_cell(o, d, 1, anchor.y, MAX_PICK_DISTANCE))
             }),
             Some(Drag::Sphere { .. }) => None,
+            Some(Drag::Brush { .. }) => hit.map(|h| h.pos),
             Some(Drag::Stroke { plane: None, .. }) | None => {
                 hit.and_then(|h| self.hover_cell(&h, ctrl))
             }
@@ -336,6 +521,17 @@ impl OctavisApp {
                 self.editor.set_block(target, if ctrl { BlockId::AIR } else { self.block });
                 self.drag = Some(Drag::Stroke { last: Some(target), plane });
             }
+            Tool::Brush => match self.build_brush(ctrl) {
+                Ok(mut brush) => {
+                    self.editor.begin_edit();
+                    self.editor.apply_brush(&brush, hit.pos);
+                    brush.seed = brush.seed.wrapping_add(1);
+                    let spacing = self.brush.dab_spacing();
+                    self.drag =
+                        Some(Drag::Brush { last: hit.pos, brush: Box::new(brush), spacing });
+                }
+                Err(_) => self.notice = Some("Fix the brush mask or pattern first"),
+            },
             Tool::SelectBox => self.drag = Some(Drag::Box { anchor: hit.pos }),
             Tool::SelectSphere => self.drag = Some(Drag::Sphere { center: hit.pos }),
             Tool::Wand => {
@@ -365,6 +561,26 @@ impl OctavisApp {
                             }
                             _ => self.editor.set_block(t, block),
                         }
+                    }
+                }
+            }
+            Some(Drag::Brush { last, brush, spacing }) => {
+                let Some(t) = target else { return };
+                if (t - *last).as_vec3().length() < *spacing {
+                    return;
+                }
+                // Dab along the line from the last dab so fast strokes stay
+                // continuous; a long jump just moves to the new surface.
+                let cells = if (t - *last).abs().max_element() > MAX_BRIDGE {
+                    vec![t]
+                } else {
+                    line_cells(*last, t)
+                };
+                for c in cells {
+                    if (c - *last).as_vec3().length() >= *spacing {
+                        self.editor.apply_brush(brush, c);
+                        brush.seed = brush.seed.wrapping_add(1);
+                        *last = c;
                     }
                 }
             }
@@ -403,7 +619,7 @@ impl OctavisApp {
 
     fn end_press(&mut self, ctrl: bool, shift: bool) {
         match self.drag.take() {
-            Some(Drag::Stroke { .. }) => self.editor.end_edit(),
+            Some(Drag::Stroke { .. } | Drag::Brush { .. }) => self.editor.end_edit(),
             Some(Drag::Box { .. } | Drag::Sphere { .. }) => {
                 if let Some(p) = self.preview.take() {
                     let mode = self.effective_mode(ctrl, shift);
@@ -446,9 +662,18 @@ impl eframe::App for OctavisApp {
                     ]),
                 ));
             }
-            let hover_cells: Vec<IVec3> = hover.into_iter().collect();
-            overlay_uploads
-                .push((render::SLOT_HOVER, Self::overlay_mesh(&[(&hover_cells, render::OVERLAY_HOVER)])));
+            // The brush highlights its whole footprint; re-mesh only when it moves.
+            let hover_cells: Vec<IVec3> = match (self.tool, hover) {
+                (Tool::Brush, Some(h)) => self.brush.shape().cells(h),
+                (_, h) => h.into_iter().collect(),
+            };
+            if hover_cells != self.sent_hover {
+                overlay_uploads.push((
+                    render::SLOT_HOVER,
+                    Self::overlay_mesh(&[(&hover_cells, render::OVERLAY_HOVER)]),
+                ));
+                self.sent_hover = hover_cells;
+            }
 
             let aspect = rect.width() / rect.height().max(1.0);
             let view_proj = self.camera.view_proj(aspect);

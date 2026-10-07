@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use glam::IVec3;
-use octavis_core::{BlockId, History, SECTION_SIZE, Selection, World};
+use octavis_core::{BlockId, Brush, History, SECTION_SIZE, Selection, World};
 
 /// Largest selection a drag may create. Keeps previews interactive and
 /// stops a runaway drag from exhausting memory; revisit for big builds.
@@ -76,6 +76,13 @@ impl Editor {
 
     pub fn end_edit(&mut self) {
         self.history.commit();
+    }
+
+    /// Applies one brush dab as part of the open edit.
+    pub fn apply_brush(&mut self, brush: &Brush, center: IVec3) {
+        for (p, b) in brush.plan(&self.world, center) {
+            self.set_block(p, b);
+        }
     }
 
     /// Fills every selected cell as one undoable edit.
@@ -186,6 +193,29 @@ mod tests {
         e.take_dirty();
         e.undo();
         assert_eq!(e.take_dirty(), vec![IVec3::X]);
+    }
+
+    #[test]
+    fn a_brush_stroke_is_one_undo_step() {
+        use octavis_core::{BrushMode, Mask, Pattern, Shape};
+        let (mut e, stone) = editor();
+        let brush = Brush {
+            shape: Shape::Sphere { radius: 2.0 },
+            mask: Mask::Any,
+            pattern: Pattern::Single(stone),
+            mode: BrushMode::Paint,
+            seed: 0,
+        };
+        e.begin_edit();
+        e.apply_brush(&brush, IVec3::new(0, 0, 0));
+        e.apply_brush(&brush, IVec3::new(10, 0, 0)); // second dab, other sections
+        e.end_edit();
+        assert_eq!(e.world.get(IVec3::new(10, 1, 0)), stone);
+        assert!(!e.take_dirty().is_empty());
+        e.undo();
+        assert_eq!(e.world.get(IVec3::new(10, 1, 0)), BlockId::AIR);
+        assert_eq!(e.world.get(IVec3::ZERO), BlockId::AIR);
+        assert!(!e.history.can_undo());
     }
 
     #[test]
