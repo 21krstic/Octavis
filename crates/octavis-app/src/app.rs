@@ -8,13 +8,16 @@ use octavis_mesh::Mesh;
 
 use crate::camera::Camera;
 use crate::editor::{Editor, MAX_SELECTION_CELLS, MAX_SPHERE_RADIUS, SelectMode};
-use crate::picking::{ray_layer_cell, ray_plane_point};
+use crate::picking::{line_cells, ray_layer_cell, ray_plane_point};
 use crate::render::{self, ViewportCallback};
 use crate::{gizmo, scene};
 
 const MAX_PICK_DISTANCE: f32 = 1000.0;
 /// Stops a wand click on a huge connected mass from running away.
 const WAND_LIMIT: usize = 200_000;
+/// Longest jump (in cells) a stroke bridges with a line; farther jumps are
+/// treated as the cursor moving to a different surface.
+const MAX_BRIDGE: i32 = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -351,8 +354,17 @@ impl OctavisApp {
             Some(Drag::Stroke { last, .. }) => {
                 if let Some(t) = target {
                     if *last != Some(t) {
-                        *last = Some(t);
-                        self.editor.set_block(t, block);
+                        let from = last.replace(t);
+                        // The cursor can travel several cells between frames;
+                        // bridge the distance so fast strokes leave no gaps.
+                        match from {
+                            Some(f) if (t - f).abs().max_element() <= MAX_BRIDGE => {
+                                for c in line_cells(f, t).into_iter().skip(1) {
+                                    self.editor.set_block(c, block);
+                                }
+                            }
+                            _ => self.editor.set_block(t, block),
+                        }
                     }
                 }
             }

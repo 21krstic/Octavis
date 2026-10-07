@@ -26,6 +26,26 @@ pub fn ray_layer_cell(
     Some(cell)
 }
 
+/// Cells on the straight line from `a` to `b`, both included, with no gaps
+/// (consecutive cells differ by at most 1 on each axis). Used to bridge the
+/// distance the cursor travels between two frames.
+pub fn line_cells(a: IVec3, b: IVec3) -> Vec<IVec3> {
+    let d = b - a;
+    let n = d.abs().max_element();
+    if n == 0 {
+        return vec![a];
+    }
+    (0..=n)
+        .map(|i| {
+            if i == n {
+                b
+            } else {
+                (a.as_vec3() + d.as_vec3() * (i as f32 / n as f32)).round().as_ivec3()
+            }
+        })
+        .collect()
+}
+
 /// Point where a ray crosses the plane through `point` with `normal`.
 pub fn ray_plane_point(
     origin: Vec3,
@@ -72,6 +92,23 @@ mod tests {
         assert!(ray_layer_cell(o, Vec3::X, 1, 0, 100.0).is_none()); // parallel
         assert!(ray_layer_cell(o, Vec3::Y, 1, 0, 100.0).is_none()); // plane behind
         assert!(ray_layer_cell(o, -Vec3::Y, 1, 0, 2.0).is_none()); // too far
+    }
+
+    #[test]
+    fn line_has_endpoints_and_no_gaps() {
+        for (a, b) in [
+            (IVec3::new(0, 0, 0), IVec3::new(7, 2, -3)),
+            (IVec3::new(-4, 5, 1), IVec3::new(-4, 5, 1)),
+            (IVec3::new(3, 3, 3), IVec3::new(-6, -1, 8)),
+        ] {
+            let line = line_cells(a, b);
+            assert_eq!(line[0], a);
+            assert_eq!(*line.last().unwrap(), b);
+            assert_eq!(line.len() as i32, (b - a).abs().max_element() + 1);
+            for w in line.windows(2) {
+                assert!((w[1] - w[0]).abs().max_element() <= 1, "gap in {line:?}");
+            }
+        }
     }
 
     #[test]
