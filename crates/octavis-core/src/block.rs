@@ -58,6 +58,11 @@ impl BlockTable {
         self.states.get(id.0 as usize)
     }
 
+    /// True if any interned state has this (namespaced) block name.
+    pub fn has_name(&self, name: &str) -> bool {
+        self.states.iter().any(|s| s.name == name)
+    }
+
     /// Number of interned states (always at least 1: air).
     pub fn len(&self) -> usize {
         self.states.len()
