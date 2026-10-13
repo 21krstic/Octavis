@@ -1,5 +1,7 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
+const MAX_DISTANCE: f32 = 1500.0;
+
 /// Orbit camera around a target point (Blender-style navigation).
 pub struct Camera {
     pub target: Vec3,
@@ -44,9 +46,16 @@ impl Camera {
         (eye, (far - eye).normalize())
     }
 
+    /// Input speed factor: 1 when fully zoomed out, easing down to 0.25 up
+    /// close, where the same mouse movement covers much more of the view.
+    fn sensitivity(&self) -> f32 {
+        (self.distance / MAX_DISTANCE).powf(0.25).clamp(0.25, 1.0)
+    }
+
     pub fn orbit(&mut self, dx: f32, dy: f32) {
-        self.yaw += dx * 0.01;
-        self.pitch = (self.pitch + dy * 0.01).clamp(-1.55, 1.55);
+        let k = 0.01 * self.sensitivity();
+        self.yaw += dx * k;
+        self.pitch = (self.pitch + dy * k).clamp(-1.55, 1.55);
     }
 
     /// Pans in the view plane; speed scales with distance.
@@ -54,12 +63,12 @@ impl Camera {
         let forward = (self.target - self.eye()).normalize();
         let right = forward.cross(Vec3::Y).normalize();
         let up = right.cross(forward);
-        let k = self.distance * 0.0015;
+        let k = self.distance * 0.0015 * self.sensitivity();
         self.target += (-right * dx + up * dy) * k;
     }
 
     pub fn zoom(&mut self, scroll: f32) {
-        self.distance = (self.distance * (-scroll * 0.002).exp()).clamp(1.0, 1500.0);
+        self.distance = (self.distance * (-scroll * 0.002).exp()).clamp(1.0, MAX_DISTANCE);
     }
 }
 
@@ -73,6 +82,18 @@ mod tests {
         let (origin, dir) = cam.ray(Vec2::new(400.0, 300.0), Vec2::new(800.0, 600.0));
         let to_target = (cam.target - origin).normalize();
         assert!(dir.dot(to_target) > 0.9999, "{dir} vs {to_target}");
+    }
+
+    #[test]
+    fn orbit_and_pan_slow_down_when_zoomed_in() {
+        let (mut near, mut far) = (Camera::new(Vec3::ZERO), Camera::new(Vec3::ZERO));
+        near.distance = 20.0;
+        far.distance = 1500.0;
+        let (n, f) = (near.yaw, far.yaw);
+        near.orbit(100.0, 0.0);
+        far.orbit(100.0, 0.0);
+        assert!((near.yaw - n) < (far.yaw - f));
+        assert!((far.yaw - f - 1.0).abs() < 1e-4); // unchanged when fully out
     }
 
     #[test]
