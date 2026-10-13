@@ -114,6 +114,27 @@ impl Editor {
         self.end_edit();
     }
 
+    /// Writes cells (for example a pasted schematic) as one undoable edit.
+    pub fn paste(&mut self, cells: &[(IVec3, BlockId)]) {
+        self.begin_edit();
+        for &(p, b) in cells {
+            self.set_block(p, b);
+        }
+        self.end_edit();
+    }
+
+    /// Swaps in a whole new world, discarding history and selection, and
+    /// schedules a remesh of every old and new section.
+    pub fn replace_world(&mut self, world: World) {
+        let mut dirty: HashSet<IVec3> = self.world.sections().map(|(p, _)| p).collect();
+        dirty.extend(world.sections().map(|(p, _)| p));
+        self.world = world;
+        self.history = History::new();
+        self.selection = Selection::new();
+        self.dirty = dirty;
+        self.selection_dirty = true;
+    }
+
     pub fn undo(&mut self) {
         let u = self.history.undo(&mut self.world, &mut self.selection);
         self.after_undo(u);
@@ -235,6 +256,32 @@ mod tests {
         assert_eq!(e.world.get(IVec3::new(10, 1, 0)), BlockId::AIR);
         assert_eq!(e.world.get(IVec3::ZERO), BlockId::AIR);
         assert!(!e.history.can_undo());
+    }
+
+    #[test]
+    fn paste_is_one_undo_step() {
+        let (mut e, stone) = editor();
+        e.paste(&[(IVec3::new(1, 1, 1), stone), (IVec3::new(40, 0, 0), stone)]);
+        assert_eq!(e.world.get(IVec3::new(40, 0, 0)), stone);
+        e.undo();
+        assert_eq!(e.world.get(IVec3::new(1, 1, 1)), BlockId::AIR);
+        assert!(!e.history.can_undo());
+    }
+
+    #[test]
+    fn replacing_the_world_remeshes_old_and_new_sections() {
+        let (mut e, stone) = editor();
+        e.set_block(IVec3::new(100, 0, 0), stone);
+        e.take_dirty();
+        e.selection = Selection::cuboid(IVec3::ZERO, IVec3::ONE);
+        let mut fresh = World::new();
+        let id = fresh.blocks.intern(octavis_core::BlockState::new("stone"));
+        fresh.set(IVec3::new(-20, 0, 0), id);
+        e.replace_world(fresh);
+        let mut d = e.take_dirty();
+        d.sort_by_key(|p| p.x);
+        assert_eq!(d, vec![IVec3::new(-2, 0, 0), IVec3::new(6, 0, 0)]);
+        assert!(e.selection.is_empty() && !e.history.can_undo());
     }
 
     #[test]

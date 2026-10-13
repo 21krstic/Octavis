@@ -1,6 +1,6 @@
 struct Globals {
     view_proj: mat4x4<f32>,
-    palette: array<vec4<f32>, 256>,
+    palette: array<vec4<f32>, 2048>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -25,7 +25,9 @@ fn vs_main(in: VertexIn) -> VertexOut {
 
     var out: VertexOut;
     out.clip = globals.view_proj * vec4<f32>(in.position, 1.0);
-    let base = globals.palette[in.block & 255u].rgb;
+    // Ids past the placeholder palette (or in the overlay range) show magenta.
+    let slot = select(in.block, 2044u, in.block >= 2040u);
+    let base = globals.palette[slot].rgb;
     out.color = vec4<f32>(base * face_light[in.face] * ao_light[in.ao], 1.0);
     return out;
 }
@@ -46,7 +48,7 @@ fn vs_overlay(in: VertexIn) -> VertexOut {
 
     var out: VertexOut;
     out.clip = globals.view_proj * vec4<f32>(lifted, 1.0);
-    out.color = globals.palette[in.block & 255u];
+    out.color = globals.palette[in.block & 2047u];
     return out;
 }
 

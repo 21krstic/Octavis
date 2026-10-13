@@ -15,6 +15,8 @@ use crate::picking::{line_cells, ray_layer_cell, ray_plane_point};
 use crate::render::{self, ViewportCallback};
 use crate::{gizmo, scene};
 
+mod files;
+
 const MAX_PICK_DISTANCE: f32 = 1000.0;
 /// Stops a wand click on a huge connected mass from running away.
 const WAND_LIMIT: usize = 200_000;
@@ -160,6 +162,9 @@ pub struct OctavisApp {
     hover: Option<IVec3>,
     /// Cells last sent as the hover overlay, to skip identical re-uploads.
     sent_hover: Vec<IVec3>,
+    block_filter: String,
+    /// Outcome of the last file operation, shown in the status bar.
+    file_msg: Option<Result<String, String>>,
     /// Bumped per stroke so random patterns and splatter differ between
     /// strokes but stay fixed within one.
     stroke_seed: u32,
@@ -189,6 +194,8 @@ impl OctavisApp {
             overlay_dirty: true,
             hover: None,
             sent_hover: Vec::new(),
+            block_filter: String::new(),
+            file_msg: None,
             stroke_seed: 0,
         }
     }
@@ -396,11 +403,22 @@ impl OctavisApp {
 
         ui.separator();
         ui.heading("Block");
-        for i in 1..self.editor.world.blocks.len() {
-            let id = BlockId(i as u32);
-            let name = &self.editor.world.blocks.get(id).unwrap().name;
-            ui.selectable_value(&mut self.block, id, name.trim_start_matches("minecraft:"));
-        }
+        ui.add(
+            egui::TextEdit::singleline(&mut self.block_filter)
+                .hint_text("filter blocks")
+                .desired_width(f32::INFINITY),
+        );
+        let filter = self.block_filter.trim().to_ascii_lowercase();
+        egui::ScrollArea::vertical().id_salt("blocks").max_height(220.0).show(ui, |ui| {
+            for i in 1..self.editor.world.blocks.len() {
+                let id = BlockId(i as u32);
+                let name = &self.editor.world.blocks.get(id).unwrap().name;
+                let short = name.trim_start_matches("minecraft:");
+                if filter.is_empty() || short.contains(&filter) {
+                    ui.selectable_value(&mut self.block, id, short);
+                }
+            }
+        });
 
         ui.separator();
         ui.heading("Selection");
@@ -458,6 +476,17 @@ impl OctavisApp {
             if let Some(n) = self.notice {
                 ui.separator();
                 ui.colored_label(egui::Color32::from_rgb(255, 170, 60), n);
+            }
+            match &self.file_msg {
+                Some(Ok(m)) => {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::from_rgb(120, 200, 120), m);
+                }
+                Some(Err(m)) => {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::from_rgb(255, 110, 90), m);
+                }
+                None => {}
             }
         });
     }
@@ -678,8 +707,15 @@ impl eframe::App for OctavisApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ui.ctx());
 
+        let mut action = None;
+        egui::Panel::top("menu").show(ui, |ui| action = self.menu_bar(ui));
+        if let Some(a) = action {
+            if self.drag.is_none() {
+                self.run_file_action(a);
+            }
+        }
         egui::Panel::left("tools").resizable(false).exact_size(210.0).show(ui, |ui| {
-            self.tool_panel(ui);
+            egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
         });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
 

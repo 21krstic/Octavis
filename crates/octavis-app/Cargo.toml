@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 octavis-core = { path = "../octavis-core" }
 octavis-mesh = { path = "../octavis-mesh" }
+octavis-io = { path = "../octavis-io" }
+rfd = "0.15"
 glam.workspace = true
 bytemuck = "1"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }

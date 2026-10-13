@@ -51,6 +51,10 @@ impl Selection {
         Self::default()
     }
 
+    pub fn from_cells(cells: impl IntoIterator<Item = IVec3>) -> Self {
+        Self { cells: cells.into_iter().collect() }
+    }
+
     /// Inclusive box between two corners, in any order.
     pub fn cuboid(a: IVec3, b: IVec3) -> Self {
         let (lo, hi) = (a.min(b), a.max(b));

@@ -74,6 +74,28 @@ impl World {
         self.sections.len()
     }
 
+    /// Inclusive bounds of the non-air blocks, if there are any. Exact,
+    /// unlike [`World::bounds`], which is section-aligned.
+    pub fn content_bounds(&self) -> Option<(IVec3, IVec3)> {
+        let mut acc: Option<(IVec3, IVec3)> = None;
+        for (sp, section) in &self.sections {
+            if section.palette().iter().all(|&b| b == BlockId::AIR) {
+                continue;
+            }
+            for z in 0..SECTION_SIZE {
+                for y in 0..SECTION_SIZE {
+                    for x in 0..SECTION_SIZE {
+                        if section.get(x, y, z) != BlockId::AIR {
+                            let p = *sp * S + IVec3::new(x as i32, y as i32, z as i32);
+                            acc = Some(acc.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
+                        }
+                    }
+                }
+            }
+        }
+        acc
+    }
+
     /// Inclusive block-space bounds of all allocated sections, if any.
     pub fn bounds(&self) -> Option<(IVec3, IVec3)> {
         let mut it = self.sections.keys();
@@ -87,6 +109,18 @@ impl World {
 mod tests {
     use super::*;
     use crate::block::BlockState;
+
+    #[test]
+    fn content_bounds_are_exact() {
+        let mut w = World::new();
+        assert_eq!(w.content_bounds(), None);
+        let stone = w.blocks.intern(BlockState::new("minecraft:stone"));
+        w.set(IVec3::new(-3, 20, 5), stone);
+        w.set(IVec3::new(40, -7, 5), stone);
+        assert_eq!(w.content_bounds(), Some((IVec3::new(-3, -7, 5), IVec3::new(40, 20, 5))));
+        w.set(IVec3::new(40, -7, 5), BlockId::AIR);
+        assert_eq!(w.content_bounds(), Some((IVec3::new(-3, 20, 5), IVec3::new(-3, 20, 5))));
+    }
 
     #[test]
     fn grows_in_all_directions_including_negative() {

@@ -1,6 +1,8 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
 const MAX_DISTANCE: f32 = 1500.0;
+/// Pan speed stops shrinking below this distance.
+const PAN_MIN_DISTANCE: f32 = 12.0;
 
 /// Orbit camera around a target point (Blender-style navigation).
 pub struct Camera {
@@ -63,7 +65,8 @@ impl Camera {
         let forward = (self.target - self.eye()).normalize();
         let right = forward.cross(Vec3::Y).normalize();
         let up = right.cross(forward);
-        let k = self.distance * 0.0015 * self.sensitivity();
+        // The floor keeps panning usable at the closest zoom.
+        let k = self.distance.max(PAN_MIN_DISTANCE) * 0.0015 * self.sensitivity();
         self.target += (-right * dx + up * dy) * k;
     }
 

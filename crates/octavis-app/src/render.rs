@@ -8,14 +8,14 @@ use octavis_mesh::{Mesh, Vertex};
 
 /// Depth format requested from eframe (`depth_buffer: 32`).
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const PALETTE_SIZE: usize = 256;
+const PALETTE_SIZE: usize = 2048;
 
-/// Palette slots 250..=255 are reserved for overlays, so real blocks are
-/// limited to ids below 250 until texture packs replace this palette.
-pub const OVERLAY_SELECTION: u32 = 250;
-pub const OVERLAY_PREVIEW: u32 = 251;
-pub const OVERLAY_HOVER: u32 = 252;
-pub const MAX_BLOCK_IDS: usize = 250;
+/// Palette slots 2040..=2047 are reserved for overlays, so real blocks are
+/// limited to ids below 2040 until texture packs replace this palette.
+pub const OVERLAY_SELECTION: u32 = 2040;
+pub const OVERLAY_PREVIEW: u32 = 2041;
+pub const OVERLAY_HOVER: u32 = 2042;
+pub const MAX_BLOCK_IDS: usize = 2040;
 
 /// Overlay mesh slots: the committed selection and the hover highlight are
 /// separate so moving the mouse never re-meshes a large selection.

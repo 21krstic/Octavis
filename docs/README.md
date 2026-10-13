@@ -54,16 +54,16 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 
 ## Dev notes
 
-- Crates: `octavis-core` (voxels, no deps but glam), `octavis-mesh` (CPU meshing: culled + per-vertex AO), `octavis-app` (eframe + wgpu viewport).
+- Crates: `octavis-core` (voxels, no deps but glam), `octavis-mesh` (CPU meshing: culled + per-vertex AO), `octavis-io` (file formats; `.schem` so far), `octavis-app` (eframe + wgpu viewport; file dialogs via rfd).
 - Windows: run cargo from **PowerShell**, not Git Bash (Git's `link` shadows MSVC `link.exe`). Needs MSVC Build Tools.
 - Vulkan crashes at startup on the dev machine; the app defaults to DX12 on Windows (`WGPU_BACKEND` overrides).
 - Run: `cargo run --release`; test: `cargo test --workspace` (both from PowerShell, repo root).
 - First full build is slow (~13 min, deps compile at opt-level 3); incremental is seconds.
-- Palette in the shader is a 256-entry placeholder (block id & 255), replaced by texture packs at milestone 7.
+- Palette in the shader is a 2048-entry placeholder (ids 0-2039 real, 2040-2047 overlays; ids past that show magenta), replaced by texture packs at milestone 7.
 
 ## Status
 
-Milestones 1-3 done (QA-accepted; remaining items are in the backlog below).
+Milestones 1-3 done (QA-accepted; remaining items are in the backlog below). Milestone 4 built, awaiting QA.
 
 1. Core grid, mesher, rendering, orbit camera (zoom-scaled orbit/pan speed).
 2. Pencil (Free stroke mode default; Plane-locked kept as an option), select box / sphere / wand (wand ignores air, optional diagonals), undoable selection changes, axis gizmo + origin axes, selection caps (500k cells; sphere radius 49; wand 200k).
@@ -72,6 +72,13 @@ Milestones 1-3 done (QA-accepted; remaining items are in the backlog below).
    - Smooth/erode/dilate run on a dense copy of the area (`Grid`) with a Passes setting (like WorldEdit's smooth brush iterations).
    - `selected` mask term restricts a brush to the selection; "Apply to selection" runs the brush over every selected cell.
    - Not yet: stamp shape (waits for stamps/prefabs), falloff, block properties in patterns/masks (`oak_stairs[facing=north]`), noise/Y-gradient patterns.
+
+4. Built, in QA: `.schem` (Sponge) import + export, File menu (`app/files.rs`, format code in `octavis-io/src/schem.rs`).
+   - Reads Sponge v1-3 (gzip or raw NBT); writes v2 (widest compatibility), root tag named `Schematic`, DataVersion 3955 (`DEFAULT_DATA_VERSION`).
+   - New scene / Open (replaces scene, frames camera, asks before discarding edits) / Import (pastes at camera target on the highest block there, selects it, one undo step; schematic air does not overwrite) / Export (selection if any, else all non-air blocks).
+   - Not supported yet because core has no storage for them: block entities (chest contents, signs) and entities. They are dropped on import with a status-bar warning; export writes none. Schematic `Offset` is ignored.
+   - Tested against files built from the spec, not yet against real WorldEdit/FAWE output.
+   - Not done: `.nbt` (structure block), `.litematic`, move/transform of pasted selections.
 
 Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 
@@ -85,7 +92,7 @@ Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 - **Selection overlay is meshed like solid blocks**: from inside a selection it is back-face culled like solid blocks. Not wrong, just noted; revisit if it confuses.
 - **No antialiasing** yet (eframe `multisampling` / MSAA pipeline sample counts). Deferred to a later patch.
 - Overlay depth: coplanar overlay faces use a pipeline depth bias (-8, slope -1.5) plus a 0.0005 lift; a larger lift made block edges peek through at exposed edges.
-- Overlay palette slots 250-255 cap real block ids at 250 (placeholder palette).
+- Placeholder palette caps real block ids at 2040 (see Dev notes); imports beyond that show magenta until texture packs.
 - Pencil only starts against existing blocks.
 - Undo memory is uncapped (see open decisions).
 

@@ -1,0 +1,10 @@
+[package]
+name = "octavis-io"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+octavis-core = { path = "../octavis-core" }
+glam.workspace = true
+fastnbt = "2"
+flate2 = "1"
