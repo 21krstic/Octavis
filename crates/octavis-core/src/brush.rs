@@ -397,6 +397,19 @@ impl Pattern {
         parse_entries(text).map(|_| ())
     }
 
+    /// Block names in valid pattern text that the table has never seen.
+    /// Using one creates a new block type, so a typo makes a bogus block.
+    pub fn unknown_names(text: &str, blocks: &BlockTable) -> Vec<String> {
+        let mut out: Vec<String> = parse_entries(text)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|n| !blocks.has_name(n))
+            .collect();
+        out.dedup();
+        out
+    }
+
     /// Parses and interns the named blocks.
     pub fn parse(text: &str, blocks: &mut BlockTable) -> Result<Pattern, String> {
         let entries = parse_entries(text)?;
@@ -799,6 +812,12 @@ mod tests {
             assert!(Pattern::validate(bad).is_err());
         }
         assert!(Pattern::validate("a,b").is_ok());
+        t.intern(BlockState::new("minecraft:stone"));
+        assert_eq!(
+            Pattern::unknown_names("stone, 20%cobblestne", &t),
+            vec!["minecraft:cobblestne".to_string()]
+        );
+        assert!(Pattern::unknown_names("bad name", &t).is_empty());
     }
 
     #[test]

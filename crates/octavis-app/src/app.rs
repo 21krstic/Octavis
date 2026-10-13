@@ -11,7 +11,7 @@ use octavis_mesh::Mesh;
 
 use crate::camera::Camera;
 use crate::editor::{Editor, MAX_SELECTION_CELLS, MAX_SPHERE_RADIUS, SelectMode};
-use crate::picking::{line_cells, ray_layer_cell, ray_plane_point};
+use crate::picking::{ray_layer_cell, ray_plane_point, trace_targets};
 use crate::render::{self, ViewportCallback};
 use crate::{gizmo, scene};
 
@@ -20,9 +20,6 @@ mod files;
 const MAX_PICK_DISTANCE: f32 = 1000.0;
 /// Stops a wand click on a huge connected mass from running away.
 const WAND_LIMIT: usize = 200_000;
-/// Longest jump (in cells) a stroke bridges with a line; farther jumps are
-/// treated as the cursor moving to a different surface.
-const MAX_BRIDGE: i32 = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -163,6 +160,9 @@ pub struct OctavisApp {
     /// Cells last sent as the hover overlay, to skip identical re-uploads.
     sent_hover: Vec<IVec3>,
     block_filter: String,
+    /// Viewport-relative cursor position at the end of the last stroke
+    /// frame; the next frame's path starts here.
+    last_cursor: Option<Vec2>,
     /// Outcome of the last file operation, shown in the status bar.
     file_msg: Option<Result<String, String>>,
     /// Bumped per stroke so random patterns and splatter differ between
@@ -195,6 +195,7 @@ impl OctavisApp {
             hover: None,
             sent_hover: Vec::new(),
             block_filter: String::new(),
+            last_cursor: None,
             file_msg: None,
             stroke_seed: 0,
         }
@@ -286,9 +287,20 @@ impl OctavisApp {
                 .hint_text("e.g. 70%stone, 30%dirt")
                 .desired_width(f32::INFINITY),
         );
-        if let Err(e) = Pattern::validate(&b.pattern_text) {
-            if !b.pattern_text.trim().is_empty() {
-                ui.colored_label(egui::Color32::from_rgb(255, 110, 90), e);
+        if !b.pattern_text.trim().is_empty() {
+            match Pattern::validate(&b.pattern_text) {
+                Err(e) => {
+                    ui.colored_label(egui::Color32::from_rgb(255, 110, 90), e);
+                }
+                Ok(()) => {
+                    let new = Pattern::unknown_names(&b.pattern_text, &self.editor.world.blocks);
+                    if !new.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 170, 60),
+                            format!("Creates new block type: {}", new.join(", ")),
+                        );
+                    }
+                }
             }
         }
         ui.small("Ctrl = erase");
@@ -520,29 +532,7 @@ impl OctavisApp {
             Some(self.camera.ray(Vec2::new(rel.x, rel.y), Vec2::new(rect.width(), rect.height())))
         });
         let hit = ray.and_then(|(o, d)| raycast(&self.editor.world, o, d, MAX_PICK_DISTANCE));
-
-        let target = match &self.drag {
-            Some(Drag::Stroke { plane: Some((axis, layer)), .. }) => {
-                ray.and_then(|(o, d)| ray_layer_cell(o, d, *axis, *layer, MAX_PICK_DISTANCE))
-            }
-            // Box corners prefer a hit block, else the horizontal plane
-            // through the anchor so the corner can be placed in open air.
-            Some(Drag::Box { anchor }) => hit.map(|h| h.pos).or_else(|| {
-                ray.and_then(|(o, d)| ray_layer_cell(o, d, 1, anchor.y, MAX_PICK_DISTANCE))
-            }),
-            Some(Drag::Sphere { .. }) => None,
-            // Pick against the world as it was when the stroke began, so the
-            // stroke's own changes never move its target (no digging
-            // through the floor or building toward the camera).
-            Some(Drag::Brush { .. }) => ray
-                .and_then(|(o, d)| {
-                    raycast_with(|p| self.editor.was_solid(p), o, d, MAX_PICK_DISTANCE)
-                })
-                .map(|h| h.pos),
-            Some(Drag::Stroke { plane: None, .. }) | None => {
-                hit.and_then(|h| self.hover_cell(&h, ctrl))
-            }
-        };
+        let target = self.target_at(ray, ctrl);
 
         let (pressed, down, released) = ui.input(|i| {
             (
@@ -555,16 +545,115 @@ impl OctavisApp {
         if pressed && response.hovered() && self.drag.is_none() {
             if let Some(h) = hit {
                 self.begin_press(&h, ctrl, shift);
+                self.last_cursor = None;
             }
         }
         if down {
-            self.continue_press(ray, target, ctrl);
+            if matches!(self.drag, Some(Drag::Stroke { .. } | Drag::Brush { .. })) {
+                self.follow_cursor(ui, rect, ctrl);
+            } else {
+                self.continue_press(ray, target);
+            }
         }
         if released {
             self.end_press(ctrl, shift);
+            self.last_cursor = None;
         }
 
         (rect, target)
+    }
+
+    /// The cell the active tool aims at for a ray, given the current drag.
+    fn target_at(&self, ray: Option<Ray>, ctrl: bool) -> Option<IVec3> {
+        let hit = || ray.and_then(|(o, d)| raycast(&self.editor.world, o, d, MAX_PICK_DISTANCE));
+        match &self.drag {
+            Some(Drag::Stroke { plane: Some((axis, layer)), .. }) => {
+                ray.and_then(|(o, d)| ray_layer_cell(o, d, *axis, *layer, MAX_PICK_DISTANCE))
+            }
+            // Box corners prefer a hit block, else the horizontal plane
+            // through the anchor so the corner can be placed in open air.
+            Some(Drag::Box { anchor }) => hit().map(|h| h.pos).or_else(|| {
+                ray.and_then(|(o, d)| ray_layer_cell(o, d, 1, anchor.y, MAX_PICK_DISTANCE))
+            }),
+            Some(Drag::Sphere { .. }) => None,
+            // Pick against the world as it was when the stroke began, so the
+            // stroke's own changes never move its target (no digging
+            // through the floor or building toward the camera).
+            Some(Drag::Brush { .. }) => ray
+                .and_then(|(o, d)| {
+                    raycast_with(|p| self.editor.was_solid(p), o, d, MAX_PICK_DISTANCE)
+                })
+                .map(|h| h.pos),
+            Some(Drag::Stroke { plane: None, .. }) | None => {
+                hit().and_then(|h| self.hover_cell(&h, ctrl))
+            }
+        }
+    }
+
+    /// Advances a pencil or brush stroke along everything the cursor did
+    /// since the last frame. Every mouse-move event is used, and the path
+    /// between them is bisected until its targets leave no gaps (see
+    /// [`trace_targets`]), so the result does not depend on frame rate.
+    fn follow_cursor(&mut self, ui: &egui::Ui, rect: egui::Rect, ctrl: bool) {
+        let size = Vec2::new(rect.width(), rect.height());
+        let rel = |p: egui::Pos2| Vec2::new(p.x - rect.min.x, p.y - rect.min.y);
+        let mut path: Vec<Vec2> = self.last_cursor.into_iter().collect();
+        ui.input(|i| {
+            for e in &i.events {
+                if let egui::Event::PointerMoved(p) = e {
+                    path.push(rel(*p));
+                }
+            }
+            if let Some(p) = i.pointer.hover_pos() {
+                if path.last() != Some(&rel(p)) {
+                    path.push(rel(p));
+                }
+            }
+        });
+
+        // Neighbouring targets must be within one cell for a pencil, and
+        // within a dab spacing for a brush.
+        let max_gap = match &self.drag {
+            Some(Drag::Brush { spacing, .. }) => (*spacing as i32).max(1),
+            _ => 1,
+        };
+        let sample = |p: Vec2| self.target_at(Some(self.camera.ray(p, size)), ctrl);
+        let mut targets = Vec::new();
+        let mut prev: Option<(Vec2, Option<IVec3>)> = None;
+        for &p in &path {
+            let t = sample(p);
+            match prev {
+                Some((pp, pt)) => trace_targets(&sample, pp, pt, p, t, max_gap, &mut targets),
+                // The first point is the previous frame's cursor, already applied.
+                None if self.last_cursor.is_none() => targets.extend(t),
+                None => {}
+            }
+            prev = Some((p, t));
+        }
+        self.last_cursor = path.last().copied().or(self.last_cursor);
+        for t in targets {
+            self.stroke_to(t, ctrl);
+        }
+    }
+
+    /// Applies the pencil or brush at one target cell.
+    fn stroke_to(&mut self, t: IVec3, ctrl: bool) {
+        let block = if ctrl { BlockId::AIR } else { self.block };
+        match &mut self.drag {
+            Some(Drag::Stroke { last, .. }) => {
+                if *last != Some(t) {
+                    *last = Some(t);
+                    self.editor.set_block(t, block);
+                }
+            }
+            Some(Drag::Brush { last, brush, spacing }) => {
+                if (t - *last).as_vec3().length() >= *spacing {
+                    self.editor.apply_brush(brush, t);
+                    *last = t;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The cell a tool would act on, for hover highlighting before a press.
@@ -611,45 +700,10 @@ impl OctavisApp {
         }
     }
 
-    fn continue_press(&mut self, ray: Option<Ray>, target: Option<IVec3>, ctrl: bool) {
-        let block = if ctrl { BlockId::AIR } else { self.block };
+    fn continue_press(&mut self, ray: Option<Ray>, target: Option<IVec3>) {
         match &mut self.drag {
-            Some(Drag::Stroke { last, .. }) => {
-                if let Some(t) = target {
-                    if *last != Some(t) {
-                        let from = last.replace(t);
-                        // The cursor can travel several cells between frames;
-                        // bridge the distance so fast strokes leave no gaps.
-                        match from {
-                            Some(f) if (t - f).abs().max_element() <= MAX_BRIDGE => {
-                                for c in line_cells(f, t).into_iter().skip(1) {
-                                    self.editor.set_block(c, block);
-                                }
-                            }
-                            _ => self.editor.set_block(t, block),
-                        }
-                    }
-                }
-            }
-            Some(Drag::Brush { last, brush, spacing }) => {
-                let Some(t) = target else { return };
-                if (t - *last).as_vec3().length() < *spacing {
-                    return;
-                }
-                // Dab along the line from the last dab so fast strokes stay
-                // continuous; a long jump just moves to the new surface.
-                let cells = if (t - *last).abs().max_element() > MAX_BRIDGE {
-                    vec![t]
-                } else {
-                    line_cells(*last, t)
-                };
-                for c in cells {
-                    if (c - *last).as_vec3().length() >= *spacing {
-                        self.editor.apply_brush(brush, c);
-                        *last = c;
-                    }
-                }
-            }
+            // Strokes are advanced by `follow_cursor`.
+            Some(Drag::Stroke { .. } | Drag::Brush { .. }) => {}
             Some(Drag::Box { anchor }) => {
                 let Some(corner) = target else { return };
                 let extent = (*anchor - corner).abs() + IVec3::ONE;

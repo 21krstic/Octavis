@@ -1,7 +1,7 @@
 //! Ray helpers for tools that need a position in space rather than a hit
 //! on an existing block.
 
-use glam::{IVec3, Vec3};
+use glam::{IVec3, Vec2, Vec3};
 
 /// Cell where a ray crosses the mid-plane of a one-cell-thick layer
 /// (`layer` along `axis`). Used to lock a pencil stroke to one plane so
@@ -26,24 +26,51 @@ pub fn ray_layer_cell(
     Some(cell)
 }
 
-/// Cells on the straight line from `a` to `b`, both included, with no gaps
-/// (consecutive cells differ by at most 1 on each axis). Used to bridge the
-/// distance the cursor travels between two frames.
-pub fn line_cells(a: IVec3, b: IVec3) -> Vec<IVec3> {
-    let d = b - a;
-    let n = d.abs().max_element();
-    if n == 0 {
-        return vec![a];
+/// Deepest bisection of one screen segment (2^9 samples at most).
+const MAX_TRACE_DEPTH: u32 = 9;
+
+/// Targets along the straight screen-space path from `p0` (whose target is
+/// `t0`) to `p1` (target `t1`), excluding `p0`'s, appended to `out`.
+///
+/// The path is bisected until neighbouring targets are within `max_gap`
+/// cells on every axis, so a fast cursor leaves no gaps and every sample
+/// lands on a surface actually under the cursor (a line drawn between two
+/// 3D cells could cut through solid volumes). The result depends only on
+/// the path, not on how often the cursor was sampled. Bisection also ends
+/// at pixel size, at depth jumps (silhouette edges) and where there is no
+/// target (sky).
+pub fn trace_targets(
+    sample: &dyn Fn(Vec2) -> Option<IVec3>,
+    p0: Vec2,
+    t0: Option<IVec3>,
+    p1: Vec2,
+    t1: Option<IVec3>,
+    max_gap: i32,
+    out: &mut Vec<IVec3>,
+) {
+    bisect(sample, p0, t0, p1, t1, max_gap, 0, out);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bisect(
+    sample: &dyn Fn(Vec2) -> Option<IVec3>,
+    p0: Vec2,
+    t0: Option<IVec3>,
+    p1: Vec2,
+    t1: Option<IVec3>,
+    max_gap: i32,
+    depth: u32,
+    out: &mut Vec<IVec3>,
+) {
+    let close = matches!((t0, t1), (Some(a), Some(b)) if (a - b).abs().max_element() <= max_gap);
+    if close || depth >= MAX_TRACE_DEPTH || t0.is_none() || t1.is_none() || p0.distance(p1) < 1.0 {
+        out.extend(t1);
+        return;
     }
-    (0..=n)
-        .map(|i| {
-            if i == n {
-                b
-            } else {
-                (a.as_vec3() + d.as_vec3() * (i as f32 / n as f32)).round().as_ivec3()
-            }
-        })
-        .collect()
+    let pm = (p0 + p1) * 0.5;
+    let tm = sample(pm);
+    bisect(sample, p0, t0, pm, tm, max_gap, depth + 1, out);
+    bisect(sample, pm, tm, p1, t1, max_gap, depth + 1, out);
 }
 
 /// Point where a ray crosses the plane through `point` with `normal`.
@@ -94,21 +121,55 @@ mod tests {
         assert!(ray_layer_cell(o, -Vec3::Y, 1, 0, 2.0).is_none()); // too far
     }
 
+    /// A flat floor seen from above: 3 pixels per cell along x.
+    fn floor(p: Vec2) -> Option<IVec3> {
+        Some(IVec3::new((p.x / 3.0).floor() as i32, 0, 0))
+    }
+
     #[test]
-    fn line_has_endpoints_and_no_gaps() {
-        for (a, b) in [
-            (IVec3::new(0, 0, 0), IVec3::new(7, 2, -3)),
-            (IVec3::new(-4, 5, 1), IVec3::new(-4, 5, 1)),
-            (IVec3::new(3, 3, 3), IVec3::new(-6, -1, 8)),
-        ] {
-            let line = line_cells(a, b);
-            assert_eq!(line[0], a);
-            assert_eq!(*line.last().unwrap(), b);
-            assert_eq!(line.len() as i32, (b - a).abs().max_element() + 1);
-            for w in line.windows(2) {
-                assert!((w[1] - w[0]).abs().max_element() <= 1, "gap in {line:?}");
+    fn trace_leaves_no_gaps_however_fast_the_cursor_moves() {
+        for gap in [1, 4] {
+            let (p0, p1) = (Vec2::new(0.0, 5.0), Vec2::new(900.0, 5.0));
+            let mut out = Vec::new();
+            trace_targets(&floor, p0, floor(p0), p1, floor(p1), gap, &mut out);
+            assert_eq!(*out.last().unwrap(), floor(p1).unwrap());
+            let mut prev = floor(p0).unwrap();
+            for &c in &out {
+                assert!((c - prev).abs().max_element() <= gap, "gap {prev} -> {c}");
+                prev = c;
             }
         }
+    }
+
+    #[test]
+    fn trace_does_not_depend_on_sampling_rate() {
+        // Many short hops and one long hop visit the same cells.
+        let cells = |hops: &[f32]| {
+            let mut out = Vec::new();
+            for w in hops.windows(2) {
+                let (a, b) = (Vec2::new(w[0], 0.0), Vec2::new(w[1], 0.0));
+                trace_targets(&floor, a, floor(a), b, floor(b), 1, &mut out);
+            }
+            out.sort_by_key(|c| c.to_array());
+            out.dedup();
+            out
+        };
+        let fine: Vec<f32> = (0..=100).map(|i| i as f32 * 9.0).collect();
+        assert_eq!(cells(&[0.0, 900.0]), cells(&fine));
+    }
+
+    #[test]
+    fn trace_terminates_at_depth_jumps_and_sky() {
+        // A cliff: cells jump from x=0 to x=1000 at pixel 50.
+        let cliff = |p: Vec2| Some(IVec3::new(if p.x < 50.0 { 0 } else { 1000 }, 0, 0));
+        let mut out = Vec::new();
+        let (p0, p1) = (Vec2::ZERO, Vec2::new(100.0, 0.0));
+        trace_targets(&cliff, p0, cliff(p0), p1, cliff(p1), 1, &mut out);
+        assert!(out.len() < 1000 && out.contains(&IVec3::new(1000, 0, 0)));
+        let sky = |_: Vec2| None;
+        let mut none = Vec::new();
+        trace_targets(&sky, p0, None, p1, None, 1, &mut none);
+        assert!(none.is_empty());
     }
 
     #[test]
