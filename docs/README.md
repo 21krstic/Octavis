@@ -65,7 +65,11 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 Milestone 1 done (core grid, mesher, rendering, orbit camera).
 Milestone 2 done pending final sign-off: pencil (Free stroke mode default; Plane-locked mode kept as an option), select box / sphere / wand (wand ignores air, optional diagonals), undoable selection changes, axis gizmo + origin axes, selection size caps (500k cells; sphere radius 49; wand 200k).
 
-Milestone 3 built, in QA: Brush tool (sphere/cube/cylinder; paint/replace, splatter, overlay, smooth, erode, dilate, erase). Mask expression language (`air solid exposed surface y>=5 <block> ! & | ( )`) and weighted patterns (`70%stone,30%dirt`) live in core `brush.rs`; strokes dab along a line so fast movement leaves no gaps. The pencil bridges fast cursor movement the same way.
+Milestone 3 built, in QA (round 1 feedback applied): Brush tool (sphere/cube/cylinder; paint/replace, splatter, overlay, smooth, erode, dilate, erase). Mask expression language (`air solid exposed surface selected y>=5 <block> ! & | ( )`) and weighted patterns (`70%stone,30%dirt`) live in core `brush.rs`; strokes dab along a line so fast movement leaves no gaps. The pencil bridges fast cursor movement the same way.
+- Brush strokes pick their target against the world as it was when the stroke began (`Editor::was_solid`), so a stroke never digs or builds under itself. Seed is fixed per stroke, so splatter density is the stroke's coverage, not per-dab.
+- Smooth/erode/dilate run on a dense copy of the area (`Grid`) with a Passes (iterations) setting, like WorldEdit's smooth brush.
+- `selected` mask term restricts a brush to the selection; "Apply to selection" runs the brush over every selected cell.
+- Default scene is a flat 480x480 platform; viewport background is grey.
 Not yet in milestone 3: stamp shape (waits for stamps/prefabs), falloff, block properties in patterns/masks (`oak_stairs[facing=north]`), noise/Y-gradient patterns.
 
 ## Known issues / backlog (from QA)
@@ -73,6 +77,7 @@ Not yet in milestone 3: stamp shape (waits for stamps/prefabs), falloff, block p
 - **Box select** needs a real fix: corners depend on hovering existing blocks (open-air fallback is only the anchor's horizontal plane). Needs a proper way to define two points in space (e.g. drag a base rectangle, then extrude height).
 - **Large sphere selections lag**: the selection overlay is rebuilt (temp world + meshing) every frame of a drag. Fix by incremental/cached overlay meshing or a cheaper overlay for big selections.
 - **Pencil Free mode**: a single tap can place several blocks in a row (the new block becomes the hit surface on following frames). Accepted for now; Plane-locked mode avoids it but felt worse for line drawing.
+- **Pencil gap bridging** (3D line between cursor targets) gives inconsistent results; needs refinement. Brush-style picking against the pre-stroke world may fix the Free-mode issues above too.
 - **Selection overlay is meshed like solid blocks**: from inside a selection it is back-face culled like solid blocks. Not wrong, just noted; revisit if it confuses.
 - **No antialiasing** yet (eframe `multisampling` / MSAA pipeline sample counts). Deferred to a later patch.
 - Overlay depth: coplanar overlay faces use a pipeline depth bias (-8, slope -1.5) plus a 0.0005 lift; a larger lift made block edges peek through at exposed edges.

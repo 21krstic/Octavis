@@ -84,6 +84,13 @@ impl History {
         old
     }
 
+    /// Value `pos` had before the open edit touched it, or `None` if the
+    /// open edit has not changed it (or there is no open edit).
+    pub fn original(&self, pos: IVec3) -> Option<BlockId> {
+        let edit = self.open.as_ref()?;
+        edit.index.get(&pos).map(|&i| edit.changes[i].old)
+    }
+
     /// Closes the open edit. Empty or no-op edits are discarded. A real
     /// edit clears the redo stack.
     pub fn commit(&mut self) {

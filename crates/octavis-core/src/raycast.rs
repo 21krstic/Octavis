@@ -17,6 +17,17 @@ pub struct RayHit {
 /// Amanatides-Woo voxel traversal: first non-air block along the ray, within
 /// `max_distance`. `dir` need not be normalized.
 pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_distance: f32) -> Option<RayHit> {
+    raycast_with(|p| world.get(p) != BlockId::AIR, origin, dir, max_distance)
+}
+
+/// [`raycast`] against any solidity test, e.g. the world as it was before
+/// an in-progress stroke.
+pub fn raycast_with(
+    solid: impl Fn(IVec3) -> bool,
+    origin: Vec3,
+    dir: Vec3,
+    max_distance: f32,
+) -> Option<RayHit> {
     let dir = dir.try_normalize()?;
     let mut cell = origin.floor().as_ivec3();
     let step = IVec3::new(dir.x.signum() as i32, dir.y.signum() as i32, dir.z.signum() as i32);
@@ -37,7 +48,7 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_distance: f32) -> Opt
         if dir.z == 0.0 { f32::INFINITY } else { (1.0 / dir.z).abs() },
     );
 
-    if world.get(cell) != BlockId::AIR {
+    if solid(cell) {
         return Some(RayHit { pos: cell, normal: IVec3::ZERO, distance: 0.0 });
     }
     loop {
@@ -69,7 +80,7 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_distance: f32) -> Opt
                 normal.z = -step.z;
             }
         }
-        if world.get(cell) != BlockId::AIR {
+        if solid(cell) {
             return Some(RayHit { pos: cell, normal, distance: t });
         }
     }

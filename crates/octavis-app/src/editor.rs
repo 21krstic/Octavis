@@ -80,9 +80,28 @@ impl Editor {
 
     /// Applies one brush dab as part of the open edit.
     pub fn apply_brush(&mut self, brush: &Brush, center: IVec3) {
-        for (p, b) in brush.plan(&self.world, center) {
+        for (p, b) in brush.plan(&self.world, &self.selection, center) {
             self.set_block(p, b);
         }
+    }
+
+    /// Runs the brush's mode, mask and pattern over every selected cell as
+    /// one undoable edit. Returns how many cells changed.
+    pub fn apply_brush_to_selection(&mut self, brush: &Brush) -> usize {
+        let cells: Vec<IVec3> = self.selection.iter().collect();
+        let changes = brush.plan_cells(&self.world, &self.selection, &cells);
+        self.begin_edit();
+        for &(p, b) in &changes {
+            self.set_block(p, b);
+        }
+        self.end_edit();
+        changes.len()
+    }
+
+    /// Whether `pos` was solid before the open edit (stroke) began.
+    /// Strokes pick against this so their own changes do not move the target.
+    pub fn was_solid(&self, pos: IVec3) -> bool {
+        self.history.original(pos).unwrap_or_else(|| self.world.get(pos)) != BlockId::AIR
     }
 
     /// Fills every selected cell as one undoable edit.
@@ -216,6 +235,36 @@ mod tests {
         assert_eq!(e.world.get(IVec3::new(10, 1, 0)), BlockId::AIR);
         assert_eq!(e.world.get(IVec3::ZERO), BlockId::AIR);
         assert!(!e.history.can_undo());
+    }
+
+    #[test]
+    fn stroke_picking_ignores_the_strokes_own_changes() {
+        let (mut e, stone) = editor();
+        e.set_block(IVec3::ZERO, stone);
+        e.begin_edit();
+        e.set_block(IVec3::ZERO, BlockId::AIR); // carved during the stroke
+        e.set_block(IVec3::X, stone); // built during the stroke
+        assert!(e.was_solid(IVec3::ZERO));
+        assert!(!e.was_solid(IVec3::X));
+        e.end_edit();
+    }
+
+    #[test]
+    fn brush_applies_to_the_selection_only() {
+        use octavis_core::{BrushMode, Mask, Pattern, Shape};
+        let (mut e, stone) = editor();
+        e.selection = Selection::cuboid(IVec3::ZERO, IVec3::new(2, 0, 0));
+        let brush = Brush {
+            shape: Shape::Sphere { radius: 1.0 },
+            mask: Mask::Any,
+            pattern: Pattern::Single(stone),
+            mode: BrushMode::Paint,
+            seed: 0,
+        };
+        assert_eq!(e.apply_brush_to_selection(&brush), 3);
+        assert_eq!(e.world.get(IVec3::new(3, 0, 0)), BlockId::AIR);
+        e.undo();
+        assert_eq!(e.world.get(IVec3::new(1, 0, 0)), BlockId::AIR);
     }
 
     #[test]

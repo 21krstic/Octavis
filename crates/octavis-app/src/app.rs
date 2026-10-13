@@ -5,7 +5,7 @@ use eframe::egui_wgpu;
 use glam::{IVec3, Vec2, Vec3};
 use octavis_core::{
     BlockId, Brush, BrushMode, Connectivity, Mask, Pattern, RayHit, Selection, Shape, World,
-    raycast,
+    raycast, raycast_with,
 };
 use octavis_mesh::Mesh;
 
@@ -81,6 +81,8 @@ struct BrushSettings {
     half_height: i32,
     mode: ModeKind,
     density: f32,
+    /// Passes for smooth / erode / dilate.
+    iterations: u32,
     mask_text: String,
     /// Empty means "the block selected in the Block list".
     pattern_text: String,
@@ -94,6 +96,7 @@ impl BrushSettings {
             half_height: 3,
             mode: ModeKind::Paint,
             density: 0.3,
+            iterations: 1,
             mask_text: String::new(),
             pattern_text: String::new(),
         }
@@ -157,6 +160,9 @@ pub struct OctavisApp {
     hover: Option<IVec3>,
     /// Cells last sent as the hover overlay, to skip identical re-uploads.
     sent_hover: Vec<IVec3>,
+    /// Bumped per stroke so random patterns and splatter differ between
+    /// strokes but stay fixed within one.
+    stroke_seed: u32,
 }
 
 impl OctavisApp {
@@ -183,6 +189,7 @@ impl OctavisApp {
             overlay_dirty: true,
             hover: None,
             sent_hover: Vec::new(),
+            stroke_seed: 0,
         }
     }
 
@@ -204,14 +211,15 @@ impl OctavisApp {
             let mode = match self.brush.mode {
                 ModeKind::Splatter => BrushMode::Splatter { density: self.brush.density },
                 ModeKind::Overlay => BrushMode::Overlay,
-                ModeKind::Smooth => BrushMode::Smooth,
-                ModeKind::Erode => BrushMode::Erode,
-                ModeKind::Dilate => BrushMode::Dilate,
+                ModeKind::Smooth => BrushMode::Smooth { iterations: self.brush.iterations },
+                ModeKind::Erode => BrushMode::Erode { iterations: self.brush.iterations },
+                ModeKind::Dilate => BrushMode::Dilate { iterations: self.brush.iterations },
                 ModeKind::Paint | ModeKind::Erase => BrushMode::Paint,
             };
             (mode, pattern)
         };
-        Ok(Brush { shape: self.brush.shape(), mask, pattern, mode, seed: 0 })
+        self.stroke_seed = self.stroke_seed.wrapping_add(1);
+        Ok(Brush { shape: self.brush.shape(), mask, pattern, mode, seed: self.stroke_seed })
     }
 
     fn brush_panel(&mut self, ui: &mut egui::Ui) {
@@ -233,6 +241,9 @@ impl OctavisApp {
         if b.mode == ModeKind::Splatter {
             ui.add(egui::Slider::new(&mut b.density, 0.05..=1.0).text("Density"));
         }
+        if matches!(b.mode, ModeKind::Smooth | ModeKind::Erode | ModeKind::Dilate) {
+            ui.add(egui::Slider::new(&mut b.iterations, 1..=8).text("Passes"));
+        }
 
         ui.label("Mask (empty = anywhere)");
         ui.add(
@@ -245,6 +256,12 @@ impl OctavisApp {
                 ui.colored_label(egui::Color32::from_rgb(255, 110, 90), e);
             }
             Ok(m) => {
+                if m.uses_selection() && self.editor.selection.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 170, 60),
+                        "Nothing is selected, so this mask matches nothing",
+                    );
+                }
                 let unknown = m.unknown_names(&self.editor.world.blocks);
                 if !unknown.is_empty() {
                     ui.colored_label(
@@ -254,7 +271,7 @@ impl OctavisApp {
                 }
             }
         }
-        ui.small("air solid exposed surface y>=5 <block>  ! & | ( )");
+        ui.small("air solid exposed surface selected y>=5 <block>  ! & | ( )");
 
         ui.label("Pattern (empty = selected block)");
         ui.add(
@@ -268,6 +285,21 @@ impl OctavisApp {
             }
         }
         ui.small("Ctrl = erase");
+
+        ui.separator();
+        let has_selection = !self.editor.selection.is_empty();
+        let apply = ui
+            .add_enabled(has_selection, egui::Button::new("Apply to selection"))
+            .on_hover_text("Runs this mode, mask and pattern over every selected block (one undo step)")
+            .clicked();
+        if apply {
+            match self.build_brush(false) {
+                Ok(brush) => {
+                    self.editor.apply_brush_to_selection(&brush);
+                }
+                Err(_) => self.notice = Some("Fix the brush mask or pattern first"),
+            }
+        }
     }
 
     fn mesh_uploads(&mut self) -> Vec<(IVec3, Option<Mesh>)> {
@@ -470,7 +502,14 @@ impl OctavisApp {
                 ray.and_then(|(o, d)| ray_layer_cell(o, d, 1, anchor.y, MAX_PICK_DISTANCE))
             }),
             Some(Drag::Sphere { .. }) => None,
-            Some(Drag::Brush { .. }) => hit.map(|h| h.pos),
+            // Pick against the world as it was when the stroke began, so the
+            // stroke's own changes never move its target (no digging
+            // through the floor or building toward the camera).
+            Some(Drag::Brush { .. }) => ray
+                .and_then(|(o, d)| {
+                    raycast_with(|p| self.editor.was_solid(p), o, d, MAX_PICK_DISTANCE)
+                })
+                .map(|h| h.pos),
             Some(Drag::Stroke { plane: None, .. }) | None => {
                 hit.and_then(|h| self.hover_cell(&h, ctrl))
             }
@@ -522,10 +561,9 @@ impl OctavisApp {
                 self.drag = Some(Drag::Stroke { last: Some(target), plane });
             }
             Tool::Brush => match self.build_brush(ctrl) {
-                Ok(mut brush) => {
+                Ok(brush) => {
                     self.editor.begin_edit();
                     self.editor.apply_brush(&brush, hit.pos);
-                    brush.seed = brush.seed.wrapping_add(1);
                     let spacing = self.brush.dab_spacing();
                     self.drag =
                         Some(Drag::Brush { last: hit.pos, brush: Box::new(brush), spacing });
@@ -579,7 +617,6 @@ impl OctavisApp {
                 for c in cells {
                     if (c - *last).as_vec3().length() >= *spacing {
                         self.editor.apply_brush(brush, c);
-                        brush.seed = brush.seed.wrapping_add(1);
                         *last = c;
                     }
                 }
@@ -633,6 +670,11 @@ impl OctavisApp {
 }
 
 impl eframe::App for OctavisApp {
+    /// Viewport background: a mid grey close to Blender's default.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.24, 0.24, 0.24, 1.0]
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ui.ctx());
 

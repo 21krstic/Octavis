@@ -6,7 +6,9 @@
 
 use glam::IVec3;
 
-use crate::{BlockId, BlockState, BlockTable, World};
+use std::collections::HashMap;
+
+use crate::{BlockId, BlockState, BlockTable, Selection, World};
 
 const FACE_DIRS: [IVec3; 6] =
     [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
@@ -91,7 +93,8 @@ impl Cmp {
 ///
 /// Text form (see [`Mask::parse`]): `air`, `solid`, `exposed` (solid with an
 /// air face neighbour), `surface` (solid with air above), `y>=10`, a block
-/// name like `stone` or `minecraft:oak_planks`, and `( ) ! & |`.
+/// name like `stone` or `minecraft:oak_planks`, `selected` (inside the
+/// selection), and `( ) ! & |`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mask {
     Any,
@@ -99,6 +102,8 @@ pub enum Mask {
     Solid,
     Exposed,
     Surface,
+    /// Inside the current selection.
+    Selected,
     /// Block name, always with namespace; matches every state of that block.
     Named(String),
     Y(Cmp, i32),
@@ -108,7 +113,7 @@ pub enum Mask {
 }
 
 impl Mask {
-    pub fn eval(&self, world: &World, pos: IVec3) -> bool {
+    pub fn eval(&self, world: &World, sel: &Selection, pos: IVec3) -> bool {
         match self {
             Mask::Any => true,
             Mask::Air => world.get(pos) == BlockId::AIR,
@@ -120,13 +125,25 @@ impl Mask {
             Mask::Surface => {
                 world.get(pos) != BlockId::AIR && world.get(pos + IVec3::Y) == BlockId::AIR
             }
+            Mask::Selected => sel.contains(pos),
             Mask::Named(name) => {
                 world.blocks.get(world.get(pos)).is_some_and(|s| &s.name == name)
             }
             Mask::Y(cmp, v) => cmp.test(pos.y, *v),
-            Mask::Not(m) => !m.eval(world, pos),
-            Mask::And(ms) => ms.iter().all(|m| m.eval(world, pos)),
-            Mask::Or(ms) => ms.iter().any(|m| m.eval(world, pos)),
+            Mask::Not(m) => !m.eval(world, sel, pos),
+            Mask::And(ms) => ms.iter().all(|m| m.eval(world, sel, pos)),
+            Mask::Or(ms) => ms.iter().any(|m| m.eval(world, sel, pos)),
+        }
+    }
+
+    /// True if the mask refers to the selection, so the UI can warn when
+    /// nothing is selected.
+    pub fn uses_selection(&self) -> bool {
+        match self {
+            Mask::Selected => true,
+            Mask::Not(m) => m.uses_selection(),
+            Mask::And(ms) | Mask::Or(ms) => ms.iter().any(Mask::uses_selection),
+            _ => false,
         }
     }
 
@@ -318,6 +335,7 @@ impl MaskParser {
                 "solid" => Ok(Mask::Solid),
                 "exposed" => Ok(Mask::Exposed),
                 "surface" => Ok(Mask::Surface),
+                "selected" | "sel" => Ok(Mask::Selected),
                 "any" => Ok(Mask::Any),
                 "y" => {
                     let Some(Token::Cmp(cmp)) = self.tokens.get(self.at).cloned() else {
@@ -417,12 +435,13 @@ pub enum BrushMode {
     Splatter { density: f32 },
     /// Puts the pattern on top of masked solid cells that have air above.
     Overlay,
-    /// Fills and removes cells toward the majority of their 26 neighbours.
-    Smooth,
+    /// Fills and removes cells toward the majority of their 26 neighbours,
+    /// repeated `iterations` times.
+    Smooth { iterations: u32 },
     /// Removes solid cells with 3+ air face neighbours (corners and spikes).
-    Erode,
+    Erode { iterations: u32 },
     /// Fills air cells with 3+ solid face neighbours (notches and pits).
-    Dilate,
+    Dilate { iterations: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -434,30 +453,112 @@ pub struct Brush {
     pub seed: u32,
 }
 
+/// Dense copy of the world around a brush, so neighbour lookups index an
+/// array instead of hashing a section position each time. Reads outside
+/// the copy fall through to the world.
+struct Grid<'a> {
+    world: &'a World,
+    lo: IVec3,
+    size: IVec3,
+    data: Vec<BlockId>,
+}
+
+/// Largest copy worth making (cells); bigger regions read the world directly.
+const MAX_GRID: i64 = 16_000_000;
+
+impl<'a> Grid<'a> {
+    fn new(world: &'a World, cells: &[IVec3]) -> Self {
+        let lo = cells.iter().fold(IVec3::MAX, |a, &c| a.min(c)) - IVec3::ONE;
+        let hi = cells.iter().fold(IVec3::MIN, |a, &c| a.max(c)) + IVec3::ONE;
+        let size = hi - lo + IVec3::ONE;
+        let volume = size.x as i64 * size.y as i64 * size.z as i64;
+        let mut data = Vec::new();
+        if cells.is_empty() || volume > MAX_GRID {
+            return Self { world, lo, size, data };
+        }
+        data.reserve(volume as usize);
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    data.push(world.get(lo + IVec3::new(x, y, z)));
+                }
+            }
+        }
+        Self { world, lo, size, data }
+    }
+
+    fn dense(&self) -> bool {
+        !self.data.is_empty()
+    }
+
+    fn index(&self, p: IVec3) -> Option<usize> {
+        let l = p - self.lo;
+        let inside = l.cmpge(IVec3::ZERO).all() && l.cmplt(self.size).all();
+        inside.then(|| ((l.z * self.size.y + l.y) * self.size.x + l.x) as usize)
+    }
+
+    fn get(&self, p: IVec3) -> BlockId {
+        match self.index(p) {
+            Some(i) if self.dense() => self.data[i],
+            _ => self.world.get(p),
+        }
+    }
+
+    fn set(&mut self, p: IVec3, b: BlockId) {
+        if let Some(i) = self.index(p).filter(|_| self.dense()) {
+            self.data[i] = b;
+        }
+    }
+}
+
 impl Brush {
     /// Changes this brush would make with its shape centred on `center`.
     /// Only cells whose value actually changes are returned.
-    pub fn plan(&self, world: &World, center: IVec3) -> Vec<(IVec3, BlockId)> {
+    pub fn plan(&self, world: &World, sel: &Selection, center: IVec3) -> Vec<(IVec3, BlockId)> {
+        self.plan_cells(world, sel, &self.shape.cells(center))
+    }
+
+    /// Like [`Brush::plan`] but over an explicit set of cells, for applying
+    /// the brush to a whole selection.
+    pub fn plan_cells(
+        &self,
+        world: &World,
+        sel: &Selection,
+        cells: &[IVec3],
+    ) -> Vec<(IVec3, BlockId)> {
+        match self.mode {
+            BrushMode::Smooth { iterations }
+            | BrushMode::Erode { iterations }
+            | BrushMode::Dilate { iterations } => {
+                self.plan_neighbourhood(world, sel, cells, iterations)
+            }
+            _ => self.plan_simple(world, sel, cells),
+        }
+    }
+
+    fn plan_simple(&self, world: &World, sel: &Selection, cells: &[IVec3]) -> Vec<(IVec3, BlockId)> {
         let mut out = Vec::new();
         let mut push = |p: IVec3, b: BlockId| {
             if world.get(p) != b {
                 out.push((p, b));
             }
         };
-        for p in self.shape.cells(center) {
+        for &p in cells {
             match self.mode {
                 BrushMode::Paint => {
-                    if self.mask.eval(world, p) {
+                    if self.mask.eval(world, sel, p) {
                         push(p, self.pattern.pick(p, self.seed));
                     }
                 }
                 BrushMode::Erase => {
-                    if self.mask.eval(world, p) {
+                    if self.mask.eval(world, sel, p) {
                         push(p, BlockId::AIR);
                     }
                 }
                 BrushMode::Splatter { density } => {
-                    if hash01(p, self.seed ^ 0x5bd1_e995) < density && self.mask.eval(world, p) {
+                    if hash01(p, self.seed ^ 0x5bd1_e995) < density
+                        && self.mask.eval(world, sel, p)
+                    {
                         push(p, self.pattern.pick(p, self.seed));
                     }
                 }
@@ -465,56 +566,90 @@ impl Brush {
                     let above = p + IVec3::Y;
                     if world.get(p) != BlockId::AIR
                         && world.get(above) == BlockId::AIR
-                        && self.mask.eval(world, p)
+                        && self.mask.eval(world, sel, p)
                     {
                         push(above, self.pattern.pick(above, self.seed));
                     }
                 }
-                BrushMode::Smooth => {
-                    if !self.mask.eval(world, p) {
-                        continue;
-                    }
-                    let mut solid = Vec::new();
-                    for dz in -1..=1 {
-                        for dy in -1..=1 {
-                            for dx in -1..=1 {
-                                let b = world.get(p + IVec3::new(dx, dy, dz));
-                                if (dx, dy, dz) != (0, 0, 0) && b != BlockId::AIR {
-                                    solid.push(b);
-                                }
-                            }
-                        }
-                    }
-                    let cur = world.get(p);
-                    if solid.len() > 13 && cur == BlockId::AIR {
-                        push(p, majority(&solid));
-                    } else if solid.len() < 13 && cur != BlockId::AIR {
-                        push(p, BlockId::AIR);
-                    }
-                }
-                BrushMode::Erode => {
-                    if world.get(p) != BlockId::AIR && self.mask.eval(world, p) {
-                        let air = FACE_DIRS.iter().filter(|&&d| world.get(p + d) == BlockId::AIR);
-                        if air.count() >= 3 {
-                            push(p, BlockId::AIR);
-                        }
-                    }
-                }
-                BrushMode::Dilate => {
-                    if world.get(p) == BlockId::AIR && self.mask.eval(world, p) {
-                        let solid: Vec<BlockId> = FACE_DIRS
-                            .iter()
-                            .map(|&d| world.get(p + d))
-                            .filter(|&b| b != BlockId::AIR)
-                            .collect();
-                        if solid.len() >= 3 {
-                            push(p, majority(&solid));
-                        }
-                    }
-                }
+                BrushMode::Smooth { .. } | BrushMode::Erode { .. } | BrushMode::Dilate { .. } => {}
             }
         }
         out
+    }
+
+    /// Smooth, erode and dilate read many neighbours per cell, so they work
+    /// on a dense copy and can repeat several passes cheaply.
+    fn plan_neighbourhood(
+        &self,
+        world: &World,
+        sel: &Selection,
+        cells: &[IVec3],
+        iterations: u32,
+    ) -> Vec<(IVec3, BlockId)> {
+        let masked: Vec<IVec3> =
+            cells.iter().copied().filter(|&p| self.mask.eval(world, sel, p)).collect();
+        let mut grid = Grid::new(world, &masked);
+        // Without the dense copy a pass cannot see its predecessor's result.
+        let passes = if grid.dense() { iterations.max(1) } else { 1 };
+        let mut result: HashMap<IVec3, BlockId> = HashMap::new();
+        for _ in 0..passes {
+            let changes: Vec<(IVec3, BlockId)> =
+                masked.iter().filter_map(|&p| self.step(&grid, p).map(|b| (p, b))).collect();
+            if changes.is_empty() {
+                break;
+            }
+            for (p, b) in changes {
+                grid.set(p, b);
+                result.insert(p, b);
+            }
+        }
+        let mut out: Vec<(IVec3, BlockId)> =
+            result.into_iter().filter(|&(p, b)| world.get(p) != b).collect();
+        out.sort_by_key(|&(p, _)| (p.z, p.y, p.x));
+        out
+    }
+
+    /// New value for `p` in one smart-mode pass, if it should change.
+    fn step(&self, grid: &Grid, p: IVec3) -> Option<BlockId> {
+        let cur = grid.get(p);
+        match self.mode {
+            BrushMode::Smooth { .. } => {
+                let mut solid = Vec::with_capacity(26);
+                for dz in -1..=1 {
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let b = grid.get(p + IVec3::new(dx, dy, dz));
+                            if (dx, dy, dz) != (0, 0, 0) && b != BlockId::AIR {
+                                solid.push(b);
+                            }
+                        }
+                    }
+                }
+                if solid.len() > 13 && cur == BlockId::AIR {
+                    Some(majority(&solid))
+                } else if solid.len() < 13 && cur != BlockId::AIR {
+                    Some(BlockId::AIR)
+                } else {
+                    None
+                }
+            }
+            BrushMode::Erode { .. } => {
+                let air = FACE_DIRS.iter().filter(|&&d| grid.get(p + d) == BlockId::AIR).count();
+                (cur != BlockId::AIR && air >= 3).then_some(BlockId::AIR)
+            }
+            BrushMode::Dilate { .. } => {
+                if cur != BlockId::AIR {
+                    return None;
+                }
+                let solid: Vec<BlockId> = FACE_DIRS
+                    .iter()
+                    .map(|&d| grid.get(p + d))
+                    .filter(|&b| b != BlockId::AIR)
+                    .collect();
+                (solid.len() >= 3).then(|| majority(&solid))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -538,6 +673,55 @@ mod tests {
         let mut w = World::new();
         let ids = names.iter().map(|n| w.blocks.intern(BlockState::new(format!("minecraft:{n}")))).collect();
         (w, ids)
+    }
+
+    fn run(b: &Brush, w: &World, c: IVec3) -> Vec<(IVec3, BlockId)> {
+        b.plan(w, &Selection::new(), c)
+    }
+
+    #[test]
+    fn selected_mask_limits_a_brush_to_the_selection() {
+        let (mut w, ids) = world_with(&["stone", "glass"]);
+        for x in 0..4 {
+            w.set(IVec3::new(x, 0, 0), ids[0]);
+        }
+        let sel = Selection::cuboid(IVec3::new(1, 0, 0), IVec3::new(2, 0, 0));
+        let mut b = brush(Shape::Cube { half: 4 }, BrushMode::Paint, ids[1]);
+        b.mask = Mask::parse("selected & stone").unwrap();
+        assert!(b.mask.uses_selection() && !Mask::parse("stone").unwrap().uses_selection());
+        let mut got: Vec<IVec3> = b.plan(&w, &sel, IVec3::new(2, 0, 0)).iter().map(|c| c.0).collect();
+        got.sort_by_key(|p| p.x);
+        assert_eq!(got, vec![IVec3::new(1, 0, 0), IVec3::new(2, 0, 0)]);
+        // Nothing selected: matches nothing.
+        assert!(b.plan(&w, &Selection::new(), IVec3::new(2, 0, 0)).is_empty());
+        // Applying to explicit cells ignores the shape.
+        let cells: Vec<IVec3> = sel.iter().collect();
+        b.mask = Mask::Any;
+        assert_eq!(b.plan_cells(&w, &sel, &cells).len(), 2);
+    }
+
+    #[test]
+    fn more_iterations_smooth_further() {
+        let (mut w, ids) = world_with(&["stone"]);
+        for x in -4..=4 {
+            for z in -4..=4 {
+                for y in -2..=0 {
+                    w.set(IVec3::new(x, y, z), ids[0]);
+                }
+            }
+        }
+        // A two-block-tall bump.
+        for y in 1..=2 {
+            w.set(IVec3::new(0, y, 0), ids[0]);
+        }
+        let shape = Shape::Cube { half: 3 };
+        let one = brush(shape, BrushMode::Smooth { iterations: 1 }, ids[0]);
+        let many = brush(shape, BrushMode::Smooth { iterations: 4 }, ids[0]);
+        let top = IVec3::new(0, 2, 0);
+        let n1 = run(&one, &w, IVec3::ZERO).len();
+        let n4 = run(&many, &w, IVec3::ZERO).len();
+        assert!(n4 >= n1);
+        assert!(run(&many, &w, IVec3::ZERO).contains(&(top, BlockId::AIR)));
     }
 
     fn brush(shape: Shape, mode: BrushMode, pattern: BlockId) -> Brush {
@@ -586,7 +770,7 @@ mod tests {
         let (mut w, ids) = world_with(&["stone", "dirt"]);
         w.set(IVec3::new(0, 0, 0), ids[0]);
         w.set(IVec3::new(0, 1, 0), ids[1]);
-        let at = |m: &str, p: IVec3| Mask::parse(m).unwrap().eval(&w, p);
+        let at = |m: &str, p: IVec3| Mask::parse(m).unwrap().eval(&w, &Selection::new(), p);
         let bottom = IVec3::ZERO;
         let top = IVec3::new(0, 1, 0);
         assert!(at("stone", bottom) && !at("stone", top));
@@ -636,9 +820,9 @@ mod tests {
         w.set(IVec3::new(0, 0, 0), ids[0]);
         w.set(IVec3::new(1, 0, 0), ids[1]);
         let mut b = brush(Shape::Cube { half: 1 }, BrushMode::Paint, ids[2]);
-        assert_eq!(b.plan(&w, IVec3::ZERO).len(), 27);
+        assert_eq!(run(&b, &w, IVec3::ZERO).len(), 27);
         b.mask = Mask::parse("stone").unwrap();
-        assert_eq!(b.plan(&w, IVec3::ZERO), vec![(IVec3::ZERO, ids[2])]);
+        assert_eq!(run(&b, &w, IVec3::ZERO), vec![(IVec3::ZERO, ids[2])]);
     }
 
     #[test]
@@ -646,7 +830,7 @@ mod tests {
         let (mut w, ids) = world_with(&["stone"]);
         w.set(IVec3::ZERO, ids[0]);
         let b = brush(Shape::Sphere { radius: 0.0 }, BrushMode::Paint, ids[0]);
-        assert!(b.plan(&w, IVec3::ZERO).is_empty());
+        assert!(run(&b, &w, IVec3::ZERO).is_empty());
     }
 
     #[test]
@@ -656,7 +840,7 @@ mod tests {
         w.set(IVec3::new(1, 0, 0), ids[1]);
         let mut b = brush(Shape::Cube { half: 1 }, BrushMode::Erase, ids[0]);
         b.mask = Mask::parse("dirt").unwrap();
-        assert_eq!(b.plan(&w, IVec3::ZERO), vec![(IVec3::new(1, 0, 0), BlockId::AIR)]);
+        assert_eq!(run(&b, &w, IVec3::ZERO), vec![(IVec3::new(1, 0, 0), BlockId::AIR)]);
     }
 
     #[test]
@@ -666,11 +850,11 @@ mod tests {
         let none = brush(shape, BrushMode::Splatter { density: 0.0 }, ids[0]);
         let all = brush(shape, BrushMode::Splatter { density: 1.0 }, ids[0]);
         let half = brush(shape, BrushMode::Splatter { density: 0.5 }, ids[0]);
-        assert!(none.plan(&w, IVec3::ZERO).is_empty());
-        assert_eq!(all.plan(&w, IVec3::ZERO).len(), 4913);
-        let n = half.plan(&w, IVec3::ZERO).len();
+        assert!(run(&none, &w, IVec3::ZERO).is_empty());
+        assert_eq!(run(&all, &w, IVec3::ZERO).len(), 4913);
+        let n = run(&half, &w, IVec3::ZERO).len();
         assert!((2200..2700).contains(&n), "{n}");
-        assert_eq!(n, half.plan(&w, IVec3::ZERO).len());
+        assert_eq!(n, run(&half, &w, IVec3::ZERO).len());
     }
 
     #[test]
@@ -682,9 +866,9 @@ mod tests {
             }
         }
         let b = brush(Shape::Cube { half: 1 }, BrushMode::Overlay, ids[1]);
-        let plan = b.plan(&w, IVec3::ZERO);
-        assert_eq!(plan.len(), 9);
-        assert!(plan.iter().all(|&(p, id)| p.y == 1 && id == ids[1]));
+        let planned = run(&b, &w, IVec3::ZERO);
+        assert_eq!(planned.len(), 9);
+        assert!(planned.iter().all(|&(p, id)| p.y == 1 && id == ids[1]));
     }
 
     #[test]
@@ -697,16 +881,16 @@ mod tests {
             }
         }
         w.set(IVec3::new(0, 1, 0), ids[0]); // spike
-        let b = brush(Shape::Cube { half: 2 }, BrushMode::Smooth, ids[0]);
-        let plan = b.plan(&w, IVec3::ZERO);
-        assert!(plan.contains(&(IVec3::new(0, 1, 0), BlockId::AIR)));
+        let b = brush(Shape::Cube { half: 2 }, BrushMode::Smooth { iterations: 1 }, ids[0]);
+        let planned = run(&b, &w, IVec3::ZERO);
+        assert!(planned.contains(&(IVec3::new(0, 1, 0), BlockId::AIR)));
         // A flat floor is stable: nothing else on it changes.
-        assert!(!plan.iter().any(|&(p, _)| p.y <= 0 && p.x.abs() <= 1 && p.z.abs() <= 1));
+        assert!(!planned.iter().any(|&(p, _)| p.y <= 0 && p.x.abs() <= 1 && p.z.abs() <= 1));
 
         w.set(IVec3::new(0, 1, 0), BlockId::AIR);
         w.set(IVec3::new(0, 0, 0), BlockId::AIR); // pit
-        let plan = b.plan(&w, IVec3::ZERO);
-        assert!(plan.contains(&(IVec3::ZERO, ids[0])));
+        let planned = run(&b, &w, IVec3::ZERO);
+        assert!(planned.contains(&(IVec3::ZERO, ids[0])));
     }
 
     #[test]
@@ -719,10 +903,10 @@ mod tests {
                 }
             }
         }
-        let b = brush(Shape::Cube { half: 4 }, BrushMode::Erode, ids[0]);
-        let plan = b.plan(&w, IVec3::splat(2));
-        assert_eq!(plan.len(), 8); // only the cube's 8 corners
-        assert!(plan.iter().all(|&(_, id)| id == BlockId::AIR));
+        let b = brush(Shape::Cube { half: 4 }, BrushMode::Erode { iterations: 1 }, ids[0]);
+        let planned = run(&b, &w, IVec3::splat(2));
+        assert_eq!(planned.len(), 8); // only the cube's 8 corners
+        assert!(planned.iter().all(|&(_, id)| id == BlockId::AIR));
     }
 
     #[test]
@@ -736,9 +920,9 @@ mod tests {
             }
         }
         w.set(IVec3::ONE, BlockId::AIR); // sealed hole: 6 solid neighbours
-        let b = brush(Shape::Sphere { radius: 0.0 }, BrushMode::Dilate, ids[0]);
-        assert_eq!(b.plan(&w, IVec3::ONE), vec![(IVec3::ONE, ids[0])]);
+        let b = brush(Shape::Sphere { radius: 0.0 }, BrushMode::Dilate { iterations: 1 }, ids[0]);
+        assert_eq!(run(&b, &w, IVec3::ONE), vec![(IVec3::ONE, ids[0])]);
         // A flat surface cell (one solid neighbour) is left alone.
-        assert!(b.plan(&w, IVec3::new(1, 3, 1)).is_empty());
+        assert!(run(&b, &w, IVec3::new(1, 3, 1)).is_empty());
     }
 }

@@ -12,7 +12,7 @@ pub mod world;
 pub use block::{BlockId, BlockState, BlockTable};
 pub use brush::{Brush, BrushMode, Cmp, Mask, Pattern, Shape};
 pub use history::{Change, History, Undone};
-pub use raycast::{RayHit, raycast};
+pub use raycast::{RayHit, raycast, raycast_with};
 pub use section::{SECTION_SIZE, SECTION_VOLUME, Section};
 pub use selection::{Connectivity, Selection, SelectionDelta};
 pub use world::World;
