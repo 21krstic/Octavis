@@ -63,7 +63,7 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 
 ## Status
 
-Milestones 1-3 done (QA-accepted; remaining items are in the backlog below). Milestone 4 built, awaiting QA.
+Milestones 1-4 done (QA-accepted; remaining items are in the backlog below). MVP reached; public README lives at the repo root (keep it in sync with features).
 
 1. Core grid, mesher, rendering, orbit camera (zoom-scaled orbit/pan speed).
 2. Pencil (Free stroke mode default; Plane-locked kept as an option), select box / sphere / wand (wand ignores air, optional diagonals), undoable selection changes, axis gizmo + origin axes, selection caps (500k cells; sphere radius 49; wand 200k).
@@ -73,11 +73,11 @@ Milestones 1-3 done (QA-accepted; remaining items are in the backlog below). Mil
    - `selected` mask term restricts a brush to the selection; "Apply to selection" runs the brush over every selected cell.
    - Not yet: stamp shape (waits for stamps/prefabs), falloff, block properties in patterns/masks (`oak_stairs[facing=north]`), noise/Y-gradient patterns.
 
-4. Built, in QA: `.schem` (Sponge) import + export, File menu (`app/files.rs`, format code in `octavis-io/src/schem.rs`).
+4. `.schem` (Sponge) import + export, File menu (`app/files.rs`, format code in `octavis-io/src/schem.rs`).
    - Reads Sponge v1-3 (gzip or raw NBT); writes v2 (widest compatibility), root tag named `Schematic`, DataVersion 3955 (`DEFAULT_DATA_VERSION`).
    - New scene / Open (replaces scene, frames camera, asks before discarding edits) / Import (pastes at camera target on the highest block there, selects it, one undo step; schematic air does not overwrite) / Export (selection if any, else all non-air blocks).
    - Not supported yet because core has no storage for them: block entities (chest contents, signs) and entities. They are dropped on import with a status-bar warning; export writes none. Schematic `Offset` is ignored.
-   - Tested against files built from the spec, not yet against real WorldEdit/FAWE output.
+   - Verified against real files from external sites. Limit: bounding box of 64M cells (`MAX_CELLS`); bigger files give a clear error. Supporting them would need streaming the block data straight into the world (the reader currently holds the NBT, an index array and a placement list).
    - Not done: `.nbt` (structure block), `.litematic`, move/transform of pasted selections.
 
 Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.

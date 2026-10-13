@@ -246,8 +246,10 @@ fn list_len(map: &mut HashMap<String, Value>, key: &str) -> usize {
 
 pub fn read_schem(bytes: &[u8]) -> Result<Schematic, SchemError> {
     let raw = gunzip_if_needed(bytes)?;
+    // The NBT library's default sequence limit (100M) would reject big files
+    // with a vague message; lift it so the cell limit below explains itself.
     let value: Value =
-        fastnbt::from_bytes(&raw).map_err(|e| SchemError(format!("not a valid NBT file: {e}")))?;
+        fastnbt::from_bytes_with_opts(&raw, fastnbt::DeOpts::new().max_seq_len(i32::MAX as usize)).map_err(|e| SchemError(format!("not a valid NBT file: {e}")))?;
     let mut root = compound(value, "root")?;
     // v3 (and some v2 writers) wrap everything in a "Schematic" compound.
     if let Some(inner) = root.remove("Schematic") {
