@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use glam::IVec3;
 
 use crate::block::BlockId;
-use crate::layers::{Layer, LayerId, LayerStack};
+use crate::layers::{Layer, LayerId, LayerKind, LayerStack};
 use crate::selection::{Selection, SelectionDelta};
 use crate::world::World;
 
@@ -28,6 +28,8 @@ pub enum LayerCmd {
     /// Swap a generator layer's recipe with `other` (the value that is not
     /// currently in the layer).
     Recipe { layer: LayerId, other: Option<String> },
+    /// Swap a layer's kind (painted / generator) with `other`.
+    Kind { layer: LayerId, other: LayerKind },
 }
 
 impl LayerCmd {
@@ -48,6 +50,11 @@ impl LayerCmd {
     /// A generator layer's recipe was just replaced; `old` is what it was.
     pub fn recipe_changed(layer: LayerId, old: Option<String>) -> Self {
         LayerCmd::Recipe { layer, other: old }
+    }
+
+    /// A layer's kind was just changed; `old` is what it was.
+    pub fn kind_changed(layer: LayerId, old: LayerKind) -> Self {
+        LayerCmd::Kind { layer, other: old }
     }
 
     /// Flips the command. `touched` collects the cells whose visible block
@@ -80,6 +87,11 @@ impl LayerCmd {
             LayerCmd::Recipe { layer, other } => {
                 if let Some(l) = stack.layer_mut(*layer) {
                     std::mem::swap(&mut l.recipe, other);
+                }
+            }
+            LayerCmd::Kind { layer, other } => {
+                if let Some(l) = stack.layer_mut(*layer) {
+                    std::mem::swap(&mut l.kind, other);
                 }
             }
         }
@@ -528,6 +540,22 @@ mod tests {
         assert_eq!((recipe(&f), f.w.get(IVec3::ZERO)), (Some("v1".into()), BlockId::AIR));
         f.redo(&mut sel);
         assert_eq!((recipe(&f), f.w.get(IVec3::ZERO)), (Some("v2".into()), f.a));
+    }
+
+    #[test]
+    fn kind_changes_undo_and_redo() {
+        let mut f = Fixture::new();
+        let mut sel = Selection::new();
+        f.s.layer_mut(f.layer).unwrap().kind = LayerKind::Generator;
+        f.h.begin();
+        f.s.layer_mut(f.layer).unwrap().kind = LayerKind::Painted;
+        f.h.push_cmd(LayerCmd::kind_changed(f.layer, LayerKind::Generator));
+        f.h.commit();
+        let kind = |f: &Fixture| f.s.layer(f.layer).unwrap().kind;
+        f.undo(&mut sel);
+        assert_eq!(kind(&f), LayerKind::Generator);
+        f.redo(&mut sel);
+        assert_eq!(kind(&f), LayerKind::Painted);
     }
 
     #[test]

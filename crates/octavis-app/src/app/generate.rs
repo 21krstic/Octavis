@@ -366,7 +366,12 @@ impl OctavisApp {
             self.update_pending_terrain(ctx);
             return;
         }
-        let Some((layer, recipe)) = self.active_generator() else { return };
+        let Some((layer, recipe)) = self.active_generator() else {
+            // Forget the recipe so coming back to a generator (undoing a
+            // bake, selecting one) reloads the panel from it.
+            self.synced_recipe.clear();
+            return;
+        };
         if recipe != self.synced_recipe {
             // A different layer, or undo/redo: show that layer's recipe.
             if let Some(settings) = TerrainSettings::from_text(&recipe) {

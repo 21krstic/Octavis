@@ -345,12 +345,19 @@ impl Editor {
         }
     }
 
-    /// Turns a generator layer into an ordinary painted one.
+    /// Turns a generator layer into an ordinary painted one (undoable; the
+    /// recipe comes back with it).
     pub fn bake_layer(&mut self, id: LayerId) {
-        if let Some(l) = self.layers.layer_mut(id) {
+        self.in_edit(|ed| {
+            let Some(l) = ed.layers.layer_mut(id) else { return };
+            if l.kind != LayerKind::Generator {
+                return;
+            }
             l.kind = LayerKind::Painted;
-            l.recipe = None;
-        }
+            let old_recipe = l.recipe.take();
+            ed.history.push_cmd(LayerCmd::kind_changed(id, LayerKind::Generator));
+            ed.history.push_cmd(LayerCmd::recipe_changed(id, old_recipe));
+        });
     }
 
     /// Swaps in a whole new world as a single layer, discarding history and
@@ -674,6 +681,13 @@ mod tests {
         assert_eq!(e.world.get(IVec3::ONE), stone);
         e.bake_layer(generated);
         assert!(e.edit_blocked().is_none());
+        // Baking is one undo step that brings the generator and recipe back.
+        e.undo();
+        assert!(e.edit_blocked().is_some());
+        assert_eq!(e.layers.layer(generated).unwrap().recipe.as_deref(), Some("r"));
+        e.redo();
+        assert!(e.edit_blocked().is_none());
+        assert_eq!(e.layers.layer(generated).unwrap().recipe, None);
     }
 
     #[test]

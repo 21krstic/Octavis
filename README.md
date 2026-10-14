@@ -25,16 +25,17 @@ Known limits: block entities (chest contents, signs) and entities are not suppor
 
 ## Controls
 
-| Input | Action |
-| --- | --- |
-| Left mouse | Use the active tool |
-| Right-drag | Orbit |
-| Middle-drag, or Shift + right-drag | Pan |
-| Mouse wheel | Zoom |
-| Ctrl + left | Break blocks (pencil), erase (brush), subtract (selection) |
-| Shift + left | Add to selection |
-| Ctrl+Z / Ctrl+Y | Undo / redo |
-| Esc | Deselect |
+| Input                              | Action                                                     |
+| ---------------------------------- | ---------------------------------------------------------- |
+| Left mouse                         | Use the active tool                                        |
+| Right-drag                         | Orbit                                                      |
+| Middle-drag, or Shift + right-drag | Pan                                                        |
+| Mouse wheel                        | Zoom                                                       |
+| Ctrl + left                        | Break blocks (pencil), erase (brush), subtract (selection) |
+| Shift + left                       | Add to selection                                           |
+| Ctrl+Z / Ctrl+Y                    | Undo / redo                                                |
+| Esc                                | Deselect, or cancel a pending terrain change               |
+| Enter                              | Apply a pending terrain change                             |
 
 ## Building
 
