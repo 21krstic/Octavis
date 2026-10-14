@@ -64,6 +64,20 @@ impl Terrain {
         max: IVec3,
         include: &dyn Fn(IVec3) -> bool,
     ) -> Result<Vec<(IVec3, BlockId)>, String> {
+        self.plan_detail(world, min, max, include, Detail::Full)
+    }
+
+    /// [`Terrain::plan`] with a choice of detail. [`Detail::Shell`] writes
+    /// only the visible skin (each column down to its lowest neighbour), so
+    /// it is far cheaper and good enough for a live preview.
+    pub fn plan_detail(
+        &self,
+        world: &World,
+        min: IVec3,
+        max: IVec3,
+        include: &dyn Fn(IVec3) -> bool,
+        detail: Detail,
+    ) -> Result<Vec<(IVec3, BlockId)>, String> {
         let size = max - min + IVec3::ONE;
         if size.min_element() < 1 {
             return Err("empty area".into());
@@ -73,20 +87,76 @@ impl Terrain {
             return Err(format!("area has {cells} blocks; the limit is {MAX_CELLS}"));
         }
         let noise = Perlin2::new(self.seed);
+        // Heights for the area plus a one-column border (neighbours of edge columns).
+        let stride = size.x as usize + 2;
+        let heights: Vec<i32> = (0..(size.z as usize + 2) * stride)
+            .map(|i| {
+                let (cx, cz) = ((i % stride) as i32, (i / stride) as i32);
+                self.height(&noise, min.x - 1 + cx, min.z - 1 + cz)
+            })
+            .collect();
+        let at = |x: i32, z: i32| heights[(z - min.z + 1) as usize * stride + (x - min.x + 1) as usize];
+
         let mut out = Vec::new();
         for z in min.z..=max.z {
             for x in min.x..=max.x {
-                let h = self.height(&noise, x, z);
-                for y in min.y..=max.y {
+                let h = at(x, z);
+                let lowest = match detail {
+                    Detail::Full => min.y,
+                    Detail::Shell => h.min(at(x - 1, z)).min(at(x + 1, z)).min(at(x, z - 1)).min(at(x, z + 1)),
+                };
+                for y in lowest.max(min.y)..=h.min(max.y) {
                     let p = IVec3::new(x, y, z);
                     let want = self.block_at(p, h);
                     if include(p) && world.get(p) != want {
                         out.push((p, want));
                     }
                 }
+                clear_above(world, x, z, (h + 1).max(min.y), max.y, include, &mut out);
             }
         }
         Ok(out)
+    }
+}
+
+/// How much of the terrain a plan writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detail {
+    /// Every cell of every column.
+    Full,
+    /// Only the exposed skin; cheap, for previews.
+    Shell,
+}
+
+/// Plans air for existing blocks in a column from `from_y` to `to_y`,
+/// skipping 16-block runs whose section is missing or entirely air.
+#[allow(clippy::too_many_arguments)]
+fn clear_above(
+    world: &World,
+    x: i32,
+    z: i32,
+    from_y: i32,
+    to_y: i32,
+    include: &dyn Fn(IVec3) -> bool,
+    out: &mut Vec<(IVec3, BlockId)>,
+) {
+    if from_y > to_y {
+        return;
+    }
+    let s = octavis_core::SECTION_SIZE as i32;
+    for sy in from_y.div_euclid(s)..=to_y.div_euclid(s) {
+        let Some(section) = world.section(IVec3::new(x.div_euclid(s), sy, z.div_euclid(s))) else {
+            continue;
+        };
+        if section.palette().iter().all(|&b| b == BlockId::AIR) {
+            continue;
+        }
+        for y in from_y.max(sy * s)..=to_y.min(sy * s + s - 1) {
+            let p = IVec3::new(x, y, z);
+            if world.get(p) != BlockId::AIR && include(p) {
+                out.push((p, BlockId::AIR));
+            }
+        }
     }
 }
 
@@ -201,6 +271,66 @@ mod tests {
         let full = t.plan(&w, min, max, &|_| true).unwrap();
         let expected: Vec<_> = full.into_iter().filter(|&(p, _)| in_l(p)).collect();
         assert_eq!(plan, expected);
+    }
+
+    #[test]
+    fn shell_shows_the_same_surface_with_far_fewer_blocks() {
+        let mut w = World::new();
+        let t = terrain(&mut w);
+        let (min, max) = (IVec3::new(-16, -5, -16), IVec3::new(16, 30, 16));
+        let junk = w.blocks.intern(BlockState::new("minecraft:glass"));
+        w.set(IVec3::new(0, 29, 0), junk); // old content above the terrain
+        let full = t.plan(&w, min, max, &|_| true).unwrap();
+        let shell = t.plan_detail(&w, min, max, &|_| true, Detail::Shell).unwrap();
+        assert!(shell.len() * 4 < full.len(), "{} vs {}", shell.len(), full.len());
+
+        let mut with_shell = w.clone();
+        apply(&mut with_shell, &shell);
+        let mut with_full = w.clone();
+        apply(&mut with_full, &full);
+        let noise = Perlin2::new(t.seed);
+        for x in -16..=16 {
+            for z in -16..=16 {
+                let h = t.height(&noise, x, z);
+                for y in [h, h + 1, 29, 30] {
+                    let p = IVec3::new(x, y, z);
+                    assert_eq!(with_shell.get(p), with_full.get(p), "{p}");
+                }
+                // A column is solid down to its lowest neighbour: no see-through gaps.
+                let low = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .map(|&(dx, dz)| t.height(&noise, x + dx, z + dz))
+                    .fold(h, i32::min);
+                for y in low.max(min.y)..=h {
+                    assert_ne!(with_shell.get(IVec3::new(x, y, z)), BlockId::AIR);
+                }
+            }
+        }
+        // Shell output is a subset of the full result's cells.
+        let full_set: std::collections::HashSet<_> = full.iter().copied().collect();
+        assert!(shell.iter().all(|c| full_set.contains(c)));
+    }
+
+    /// Run with `cargo test -p octavis-gen --release -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn timing_full_versus_shell() {
+        let mut w = World::new();
+        let t = terrain(&mut w);
+        let stone = w.blocks.intern(BlockState::new("minecraft:stone"));
+        for x in -64..64 {
+            for z in -64..64 {
+                for y in -3..=0 {
+                    w.set(IVec3::new(x, y, z), stone);
+                }
+            }
+        }
+        let (min, max) = (IVec3::new(-64, -12, -64), IVec3::new(63, 20, 63));
+        for (name, detail) in [("full", Detail::Full), ("shell", Detail::Shell)] {
+            let start = std::time::Instant::now();
+            let plan = t.plan_detail(&w, min, max, &|_| true, detail).unwrap();
+            println!("{name}: {} changes in {:?}", plan.len(), start.elapsed());
+        }
     }
 
     fn t_block(w: &World, n: &str) -> BlockId {

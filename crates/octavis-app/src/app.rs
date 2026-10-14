@@ -784,6 +784,7 @@ impl eframe::App for OctavisApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ui.ctx());
+        self.terrain_preview_shortcut(ui.ctx());
 
         self.update_terrain_preview(ui.ctx());
         let mut action = None;

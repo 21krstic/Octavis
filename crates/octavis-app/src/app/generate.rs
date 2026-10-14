@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use glam::IVec3;
 use octavis_core::{BlockId, Pattern};
-use octavis_gen::Terrain;
+use octavis_gen::{Detail, Terrain};
 
 use super::OctavisApp;
 
@@ -32,6 +32,9 @@ pub(super) struct TerrainSettings {
     depth: i32,
     /// Fit to the selection (its bounds, and only its cells) when one exists.
     use_selection: bool,
+    /// Preview only the visible skin of the terrain (much faster); Apply
+    /// always generates the full result.
+    low_preview: bool,
     scale: f32,
     octaves: u32,
     persistence: f32,
@@ -52,6 +55,7 @@ impl TerrainSettings {
             size: 128,
             depth: 12,
             use_selection: true,
+            low_preview: true,
             scale: 64.0,
             octaves: 4,
             persistence: 0.5,
@@ -165,10 +169,12 @@ impl OctavisApp {
         }
 
         ui.separator();
+        ui.checkbox(&mut self.terrain.low_preview, "Low-quality preview")
+            .on_hover_text("Preview only the visible skin of the terrain: much faster. Apply still generates everything.");
         if previewing {
             ui.colored_label(egui::Color32::from_rgb(255, 200, 80), "Previewing. Tools are locked until you apply or cancel.");
             ui.horizontal(|ui| {
-                if ui.button("Apply").on_hover_text("Keep the terrain (one undo step)").clicked() {
+                if ui.button("Apply (Enter)").on_hover_text("Keep the terrain (one undo step)").clicked() {
                     self.apply_terrain_preview();
                 }
                 if ui.button("Cancel (Esc)").clicked() {
@@ -213,20 +219,20 @@ impl OctavisApp {
     }
 
     /// Changes the current settings would make to the world as it is now.
-    fn plan_terrain(&mut self) -> Result<Vec<(IVec3, BlockId)>, String> {
+    fn plan_terrain(&mut self, detail: Detail) -> Result<Vec<(IVec3, BlockId)>, String> {
         let terrain = self.build_terrain()?;
         let (min, max) = self.terrain_area();
         if self.terrain_uses_selection() {
             let sel = &self.editor.selection;
-            terrain.plan(&self.editor.world, min, max, &|p| sel.contains(p))
+            terrain.plan_detail(&self.editor.world, min, max, &|p| sel.contains(p), detail)
         } else {
-            terrain.plan(&self.editor.world, min, max, &|_| true)
+            terrain.plan_detail(&self.editor.world, min, max, &|_| true, detail)
         }
     }
 
     /// One-shot generation: one undo step.
     fn generate_terrain(&mut self) -> Result<String, String> {
-        let plan = self.plan_terrain()?;
+        let plan = self.plan_terrain(Detail::Full)?;
         if plan.is_empty() {
             return Ok("Terrain already matches; nothing changed".into());
         }
@@ -253,7 +259,8 @@ impl OctavisApp {
         let Some(preview) = self.terrain_preview.as_mut() else { return };
         let old = std::mem::take(&mut preview.backup);
         self.editor.restore(old);
-        let plan = self.plan_terrain();
+        let detail = if self.terrain.low_preview { Detail::Shell } else { Detail::Full };
+        let plan = self.plan_terrain(detail);
         let settings = self.terrain.clone();
         let backup = match plan {
             Ok(plan) => {
@@ -294,14 +301,29 @@ impl OctavisApp {
     }
 
     fn apply_terrain_preview(&mut self) {
-        // Make sure what is shown matches the settings, then keep it.
-        if self.terrain_preview.as_ref().is_some_and(|p| p.shown != self.terrain) {
-            self.refresh_terrain_preview();
-        }
-        if let Some(preview) = self.terrain_preview.take() {
+        let Some(preview) = self.terrain_preview.take() else { return };
+        let seed = self.terrain.seed;
+        if self.terrain.low_preview || preview.shown != self.terrain {
+            // The preview is only a skin, or is stale: generate the real thing.
+            self.editor.restore(preview.backup);
+            self.file_msg = Some(match self.plan_terrain(Detail::Full) {
+                Ok(plan) => {
+                    self.editor.paste(&plan);
+                    Ok(format!("Applied terrain (seed {seed}): {} blocks changed. Ctrl+Z undoes it.", plan.len()))
+                }
+                Err(e) => Err(e),
+            });
+        } else {
             let n = preview.backup.len();
             self.editor.commit_applied(preview.backup);
-            self.file_msg = Some(Ok(format!("Applied terrain (seed {}): {n} blocks changed. Ctrl+Z undoes it.", self.terrain.seed)));
+            self.file_msg = Some(Ok(format!("Applied terrain (seed {seed}): {n} blocks changed. Ctrl+Z undoes it.")));
+        }
+    }
+
+    /// Enter applies a running preview (unless a text box is being edited).
+    pub(super) fn terrain_preview_shortcut(&mut self, ctx: &egui::Context) {
+        if self.locked() && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            self.apply_terrain_preview();
         }
     }
 }
