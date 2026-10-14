@@ -55,6 +55,8 @@ impl OctavisApp {
     }
 
     pub(super) fn run_file_action(&mut self, action: FileAction) {
+        // A pending terrain preview is not part of the scene yet.
+        self.cancel_terrain_preview();
         let outcome = match action {
             FileAction::New => self.new_scene(),
             FileAction::Open => self.open_schem(),

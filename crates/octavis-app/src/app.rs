@@ -162,6 +162,7 @@ pub struct OctavisApp {
     sent_hover: Vec<IVec3>,
     block_filter: String,
     terrain: generate::TerrainSettings,
+    terrain_preview: Option<generate::TerrainPreview>,
     /// Viewport-relative cursor position at the end of the last stroke
     /// frame; the next frame's path starts here.
     last_cursor: Option<Vec2>,
@@ -198,6 +199,7 @@ impl OctavisApp {
             sent_hover: Vec::new(),
             block_filter: String::new(),
             terrain: generate::TerrainSettings::new(),
+            terrain_preview: None,
             last_cursor: None,
             file_msg: None,
             stroke_seed: 0,
@@ -374,6 +376,13 @@ impl OctavisApp {
         if self.drag.is_some() {
             return;
         }
+        // During a terrain preview, Esc cancels it and nothing else edits.
+        if self.locked() {
+            if deselect {
+                self.cancel_terrain_preview();
+            }
+            return;
+        }
         if undo {
             self.editor.undo();
         }
@@ -386,6 +395,33 @@ impl OctavisApp {
     }
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
+        let unlocked = !self.locked();
+        ui.add_enabled_ui(unlocked, |ui| self.edit_tools_panel(ui));
+        ui.separator();
+        egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
+            self.terrain_panel(ui);
+        });
+        ui.separator();
+        ui.add_enabled_ui(unlocked, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(self.editor.history.can_undo(), |ui| {
+                    if ui.button("Undo").clicked() {
+                        self.editor.undo();
+                    }
+                });
+                ui.add_enabled_ui(self.editor.history.can_redo(), |ui| {
+                    if ui.button("Redo").clicked() {
+                        self.editor.redo();
+                    }
+                });
+            });
+            ui.small("Ctrl+Z / Ctrl+Y");
+        });
+        ui.separator();
+        ui.checkbox(&mut self.show_axes, "Show axes");
+    }
+
+    fn edit_tools_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Tools");
         ui.selectable_value(&mut self.tool, Tool::Pencil, "Pencil (place / Ctrl: break)");
         ui.selectable_value(&mut self.tool, Tool::Brush, "Brush");
@@ -449,29 +485,6 @@ impl OctavisApp {
                 self.editor.clear_selection();
             }
         });
-
-        ui.separator();
-        egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
-            self.terrain_panel(ui);
-        });
-
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(self.editor.history.can_undo(), |ui| {
-                if ui.button("Undo").clicked() {
-                    self.editor.undo();
-                }
-            });
-            ui.add_enabled_ui(self.editor.history.can_redo(), |ui| {
-                if ui.button("Redo").clicked() {
-                    self.editor.redo();
-                }
-            });
-        });
-        ui.small("Ctrl+Z / Ctrl+Y");
-
-        ui.separator();
-        ui.checkbox(&mut self.show_axes, "Show axes");
     }
 
     fn status_bar(&self, ui: &mut egui::Ui) {
@@ -550,7 +563,10 @@ impl OctavisApp {
             )
         });
         self.notice = None;
-        if pressed && response.hovered() && self.drag.is_none() {
+        if pressed && self.locked() && response.hovered() {
+            self.notice = Some("Terrain preview is active: Apply or Cancel first");
+        }
+        if pressed && response.hovered() && self.drag.is_none() && !self.locked() {
             if let Some(h) = hit {
                 self.begin_press(&h, ctrl, shift);
                 self.last_cursor = None;
@@ -769,6 +785,7 @@ impl eframe::App for OctavisApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ui.ctx());
 
+        self.update_terrain_preview(ui.ctx());
         let mut action = None;
         egui::Panel::top("menu").show(ui, |ui| action = self.menu_bar(ui));
         if let Some(a) = action {

@@ -102,6 +102,20 @@ impl History {
         }
     }
 
+    /// Records changes that were already written to the world (outside any
+    /// open edit) as one undo step.
+    pub fn record_applied(&mut self, changes: impl IntoIterator<Item = Change>) {
+        self.commit();
+        let mut edit = Edit::default();
+        for c in changes {
+            edit.record(c.pos, c.old, c.new);
+        }
+        if !edit.is_noop() {
+            self.undo.push(edit);
+            self.redo.clear();
+        }
+    }
+
     /// Records an already-applied selection change as its own undo step.
     pub fn record_selection(&mut self, delta: SelectionDelta) {
         self.commit();

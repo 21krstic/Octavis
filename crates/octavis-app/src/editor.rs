@@ -123,6 +123,35 @@ impl Editor {
         self.end_edit();
     }
 
+    /// Writes cells without recording history (for a live preview) and
+    /// returns the old values so [`Editor::restore`] or
+    /// [`Editor::commit_applied`] can finish the job.
+    pub fn apply_untracked(&mut self, cells: &[(IVec3, BlockId)]) -> Vec<(IVec3, BlockId)> {
+        debug_assert!(!self.history.is_open(), "untracked write inside an open edit");
+        let mut backup = Vec::with_capacity(cells.len());
+        for &(p, b) in cells {
+            backup.push((p, self.world.get(p)));
+            self.set_block(p, b);
+        }
+        backup
+    }
+
+    /// Undoes [`Editor::apply_untracked`].
+    pub fn restore(&mut self, backup: Vec<(IVec3, BlockId)>) {
+        for (p, old) in backup.into_iter().rev() {
+            self.set_block(p, old);
+        }
+    }
+
+    /// Turns an [`Editor::apply_untracked`] write into one undo step.
+    pub fn commit_applied(&mut self, backup: Vec<(IVec3, BlockId)>) {
+        let changes: Vec<octavis_core::Change> = backup
+            .into_iter()
+            .map(|(pos, old)| octavis_core::Change { pos, old, new: self.world.get(pos) })
+            .collect();
+        self.history.record_applied(changes);
+    }
+
     /// Swaps in a whole new world, discarding history and selection, and
     /// schedules a remesh of every old and new section.
     pub fn replace_world(&mut self, world: World) {
@@ -266,6 +295,29 @@ mod tests {
         e.undo();
         assert_eq!(e.world.get(IVec3::new(1, 1, 1)), BlockId::AIR);
         assert!(!e.history.can_undo());
+    }
+
+    #[test]
+    fn untracked_preview_can_be_restored_or_committed() {
+        let (mut e, stone) = editor();
+        e.set_block(IVec3::ZERO, stone);
+        e.take_dirty();
+        let plan = [(IVec3::ZERO, BlockId::AIR), (IVec3::new(2, 0, 0), stone)];
+        let backup = e.apply_untracked(&plan);
+        assert_eq!(e.world.get(IVec3::new(2, 0, 0)), stone);
+        assert!(!e.take_dirty().is_empty() && !e.history.can_undo());
+        e.restore(backup);
+        assert_eq!(e.world.get(IVec3::ZERO), stone);
+        assert_eq!(e.world.get(IVec3::new(2, 0, 0)), BlockId::AIR);
+
+        let backup = e.apply_untracked(&plan);
+        e.commit_applied(backup);
+        assert!(e.history.can_undo());
+        e.undo();
+        assert_eq!(e.world.get(IVec3::ZERO), stone);
+        assert_eq!(e.world.get(IVec3::new(2, 0, 0)), BlockId::AIR);
+        e.redo();
+        assert_eq!(e.world.get(IVec3::new(2, 0, 0)), stone);
     }
 
     #[test]

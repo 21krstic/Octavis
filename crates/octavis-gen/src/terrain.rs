@@ -54,8 +54,16 @@ impl Terrain {
     /// Changes needed to carve this terrain into the inclusive box
     /// `min..=max`: every column is rewritten over the box's full height
     /// (air above the surface, so regenerating replaces old terrain). Only
-    /// cells that actually change are returned.
-    pub fn plan(&self, world: &World, min: IVec3, max: IVec3) -> Result<Vec<(IVec3, BlockId)>, String> {
+    /// cells that actually change are returned. Cells for which `include`
+    /// is false are left alone (heights stay absolute, so a masked region
+    /// matches the same area generated unmasked).
+    pub fn plan(
+        &self,
+        world: &World,
+        min: IVec3,
+        max: IVec3,
+        include: &dyn Fn(IVec3) -> bool,
+    ) -> Result<Vec<(IVec3, BlockId)>, String> {
         let size = max - min + IVec3::ONE;
         if size.min_element() < 1 {
             return Err("empty area".into());
@@ -72,7 +80,7 @@ impl Terrain {
                 for y in min.y..=max.y {
                     let p = IVec3::new(x, y, z);
                     let want = self.block_at(p, h);
-                    if world.get(p) != want {
+                    if include(p) && world.get(p) != want {
                         out.push((p, want));
                     }
                 }
@@ -114,7 +122,7 @@ mod tests {
         let mut w = World::new();
         let t = terrain(&mut w);
         let (min, max) = (IVec3::new(-20, -5, -20), IVec3::new(20, 30, 20));
-        let plan = t.plan(&w, min, max).unwrap();
+        let plan = t.plan(&w, min, max, &|_| true).unwrap();
         apply(&mut w, &plan);
         let [grass, dirt, stone] = ["grass_block", "dirt", "stone"]
             .map(|n| w.blocks.intern(BlockState::new(format!("minecraft:{n}"))));
@@ -141,12 +149,12 @@ mod tests {
         let mut w = World::new();
         let t = terrain(&mut w);
         let (min, max) = (IVec3::new(0, 0, 0), IVec3::new(15, 25, 15));
-        let first = t.plan(&w, min, max).unwrap();
-        assert_eq!(first, t.plan(&w, min, max).unwrap());
+        let first = t.plan(&w, min, max, &|_| true).unwrap();
+        assert_eq!(first, t.plan(&w, min, max, &|_| true).unwrap());
         apply(&mut w, &first);
-        assert!(t.plan(&w, min, max).unwrap().is_empty());
+        assert!(t.plan(&w, min, max, &|_| true).unwrap().is_empty());
         let other = Terrain { seed: 12, ..t.clone() };
-        assert!(!other.plan(&w, min, max).unwrap().is_empty());
+        assert!(!other.plan(&w, min, max, &|_| true).unwrap().is_empty());
     }
 
     #[test]
@@ -154,14 +162,14 @@ mod tests {
         let mut w = World::new();
         let t = terrain(&mut w);
         let (min, max) = (IVec3::new(0, 0, 0), IVec3::new(7, 25, 7));
-        let first = t.plan(&w, min, max).unwrap();
+        let first = t.plan(&w, min, max, &|_| true).unwrap();
         apply(&mut w, &first);
         // A tall column left over from earlier edits, and a block outside the box.
         let junk = w.blocks.intern(BlockState::new("minecraft:glass"));
         w.set(IVec3::new(3, 24, 3), junk);
         w.set(IVec3::new(3, 40, 3), junk);
         let flat = Terrain { amplitude: 0.0, ..t };
-        let second = flat.plan(&w, min, max).unwrap();
+        let second = flat.plan(&w, min, max, &|_| true).unwrap();
         apply(&mut w, &second);
         assert_eq!(w.get(IVec3::new(3, 24, 3)), BlockId::AIR);
         assert_eq!(w.get(IVec3::new(3, 40, 3)), junk);
@@ -173,11 +181,26 @@ mod tests {
         let mut t = terrain(&mut w);
         let moss = w.blocks.intern(BlockState::new("minecraft:moss_block"));
         t.surface = Pattern::Weighted(vec![(t_block(&w, "grass_block"), 1.0), (moss, 1.0)]);
-        let plan = t.plan(&w, IVec3::ZERO, IVec3::new(31, 20, 31)).unwrap();
+        let plan = t.plan(&w, IVec3::ZERO, IVec3::new(31, 20, 31), &|_| true).unwrap();
         let tops = plan.iter().filter(|&&(p, b)| b == moss && p.y > 0).count();
         assert!(tops > 100, "expected a mix on the surface, got {tops}");
-        assert!(t.plan(&w, IVec3::ZERO, IVec3::new(5000, 5000, 5000)).is_err());
-        assert!(t.plan(&w, IVec3::ONE, IVec3::ZERO).is_err());
+        assert!(t.plan(&w, IVec3::ZERO, IVec3::new(5000, 5000, 5000), &|_| true).is_err());
+        assert!(t.plan(&w, IVec3::ONE, IVec3::ZERO, &|_| true).is_err());
+    }
+
+    #[test]
+    fn include_mask_limits_changes_to_chosen_cells() {
+        let mut w = World::new();
+        let t = terrain(&mut w);
+        let (min, max) = (IVec3::new(0, 0, 0), IVec3::new(15, 25, 15));
+        // An L-shaped region: its bounding box is the whole 16x16 area.
+        let in_l = |p: IVec3| p.x < 4 || p.z < 4;
+        let plan = t.plan(&w, min, max, &in_l).unwrap();
+        assert!(!plan.is_empty() && plan.iter().all(|&(p, _)| in_l(p)));
+        // Heights are absolute, so masked terrain matches unmasked terrain.
+        let full = t.plan(&w, min, max, &|_| true).unwrap();
+        let expected: Vec<_> = full.into_iter().filter(|&(p, _)| in_l(p)).collect();
+        assert_eq!(plan, expected);
     }
 
     fn t_block(w: &World, n: &str) -> BlockId {

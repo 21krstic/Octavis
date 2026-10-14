@@ -80,8 +80,9 @@ Milestones 1-4 done (QA-accepted; remaining items are in the backlog below). MVP
    - Verified against real files from external sites. Limit: bounding box of 64M cells (`MAX_CELLS`); bigger files give a clear error. Supporting them would need streaming the block data straight into the world (the reader currently holds the NBT, an index array and a placement list).
    - Not done: `.nbt` (structure block), `.litematic`, move/transform of pasted selections.
 
-5. Built, in QA: noise terrain generator (`octavis-gen`: `Perlin2` + fBm, `Terrain::plan`; panel in `app/generate.rs`). Heightfield from fractal noise; three patterns for surface / soil / deep layers; area = selection bounds, else a square around the camera target. Rewrites whole columns in the area (air above the surface), one undo step, deterministic per seed. Cap 4M cells per run.
-   - Not yet: live preview, non-destructive regeneration (waits for layers: a generator layer will store these params + seed), 3D density / caves, biomes, water, trees, edge blending with existing terrain.
+5. Built, in QA: noise terrain generator (`octavis-gen`: `Perlin2` + fBm, `Terrain::plan`; panel in `app/generate.rs`). Heightfield from fractal noise; three patterns for surface / soil / deep layers. Area is either a manual square (centre X/Z, size, depth; independent of the camera, with a "centre on camera target" button) or the selection (its bounds, and only its selected cells, so non-box selections work). One undo step, deterministic per seed, cap 4M cells per run.
+   - **Live preview** (`TerrainPreview`): writes the terrain into the world untracked (`Editor::apply_untracked`) keeping a backup, recomputes (throttled to ~150 ms) when settings change, and Apply commits it as one undo step (`commit_applied`) / Cancel restores. Editing tools, undo, file actions are locked or cancel it while active.
+   - Not yet: non-destructive regeneration (waits for layers: a generator layer will store these params + seed), 3D density / caves, biomes, water, trees, edge blending with existing terrain.
 
 Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 

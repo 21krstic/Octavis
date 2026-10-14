@@ -15,7 +15,7 @@ Octavis is not affiliated with Mojang or Microsoft and ships no Minecraft assets
   - **Masks** decide which cells a brush may change: `stone | dirt & y<10`, `surface`, `exposed`, `air`, `selected`, ...
   - **Patterns** decide what gets written: `70%stone, 30%dirt`.
   - A whole stroke is one undo step.
-- **Terrain generator:** seeded fractal-noise heightmaps with configurable scale, roughness, height and block layers (grass / soil / stone, or any patterns). Same seed, same terrain on every machine.
+- **Terrain generator:** seeded fractal-noise heightmaps with configurable scale, roughness, height and block layers (grass / soil / stone, or any patterns), a live preview, and generation into a manual area or the exact cells of a selection. Same seed, same terrain on every machine.
 - **Fill / delete** a selection, and **apply a brush to a selection**.
 - **Undo / redo** for everything.
 - **`.schem` import and export** (Sponge schematics): open a file, import it into the scene, or export a selection or the whole scene. Reads Sponge v1-3 and writes v2, which WorldEdit, FAWE and most other tools understand.
@@ -51,7 +51,7 @@ On Windows the app uses DirectX 12; set `WGPU_BACKEND` to override.
 
 Roughly in order:
 
-1. More generators (caves, 3D density fields, shapes) and live previews
+1. More generators (caves, 3D density fields, shapes)
 2. Layers, including non-destructive generator layers
 3. Texture packs, loaded from a plain folder you extract yourself (Octavis never bundles Mojang assets; an open placeholder pack is the long-term goal)
 4. Image and OBJ to blocks; OBJ export
