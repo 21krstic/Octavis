@@ -1,0 +1,8 @@
+[package]
+name = "octavis-gen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+octavis-core = { path = "../octavis-core" }
+glam.workspace = true

@@ -2105,6 +2105,7 @@ dependencies = [
  "eframe",
  "glam",
  "octavis-core",
+ "octavis-gen",
  "octavis-io",
  "octavis-mesh",
  "rfd",
@@ -2115,6 +2116,14 @@ name = "octavis-core"
 version = "0.1.0"
 dependencies = [
  "glam",
+]
+
+[[package]]
+name = "octavis-gen"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "octavis-core",
 ]
 
 [[package]]

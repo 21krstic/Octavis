@@ -16,6 +16,7 @@ use crate::render::{self, ViewportCallback};
 use crate::{gizmo, scene};
 
 mod files;
+mod generate;
 
 const MAX_PICK_DISTANCE: f32 = 1000.0;
 /// Stops a wand click on a huge connected mass from running away.
@@ -160,6 +161,7 @@ pub struct OctavisApp {
     /// Cells last sent as the hover overlay, to skip identical re-uploads.
     sent_hover: Vec<IVec3>,
     block_filter: String,
+    terrain: generate::TerrainSettings,
     /// Viewport-relative cursor position at the end of the last stroke
     /// frame; the next frame's path starts here.
     last_cursor: Option<Vec2>,
@@ -195,6 +197,7 @@ impl OctavisApp {
             hover: None,
             sent_hover: Vec::new(),
             block_filter: String::new(),
+            terrain: generate::TerrainSettings::new(),
             last_cursor: None,
             file_msg: None,
             stroke_seed: 0,
@@ -445,6 +448,11 @@ impl OctavisApp {
             if ui.button("Deselect (Esc)").clicked() {
                 self.editor.clear_selection();
             }
+        });
+
+        ui.separator();
+        egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
+            self.terrain_panel(ui);
         });
 
         ui.separator();

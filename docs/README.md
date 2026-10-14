@@ -7,7 +7,7 @@ Platform: Windows / macOS / Linux. Remote: https://github.com/21krstic/Octavis (
 
 ## Stack
 
-Rust, winit, wgpu, egui + egui_dock, glam, fastnbt, image, noise-rs, serde, rayon.
+Rust, winit, wgpu, egui + egui_dock, glam, fastnbt, image, serde, rayon. Noise is hand-rolled (`octavis-gen/noise.rs`): no libm calls and literal gradient tables so a seed gives identical results on every platform (golden-value test guards this).
 Later: mlua (Lua generators/brushes), egui node-graph crate (generator graphs).
 
 ## Architecture
@@ -54,7 +54,7 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 
 ## Dev notes
 
-- Crates: `octavis-core` (voxels, no deps but glam), `octavis-mesh` (CPU meshing: culled + per-vertex AO), `octavis-io` (file formats; `.schem` so far), `octavis-app` (eframe + wgpu viewport; file dialogs via rfd).
+- Crates: `octavis-core` (voxels, no deps but glam), `octavis-mesh` (CPU meshing: culled + per-vertex AO), `octavis-io` (file formats; `.schem` so far), `octavis-gen` (procedural generators; terrain so far), `octavis-app` (eframe + wgpu viewport; file dialogs via rfd).
 - Windows: run cargo from **PowerShell**, not Git Bash (Git's `link` shadows MSVC `link.exe`). Needs MSVC Build Tools.
 - Vulkan crashes at startup on the dev machine; the app defaults to DX12 on Windows (`WGPU_BACKEND` overrides).
 - Run: `cargo run --release`; test: `cargo test --workspace` (both from PowerShell, repo root).
@@ -79,6 +79,9 @@ Milestones 1-4 done (QA-accepted; remaining items are in the backlog below). MVP
    - Not supported yet because core has no storage for them: block entities (chest contents, signs) and entities. They are dropped on import with a status-bar warning; export writes none. Schematic `Offset` is ignored.
    - Verified against real files from external sites. Limit: bounding box of 64M cells (`MAX_CELLS`); bigger files give a clear error. Supporting them would need streaming the block data straight into the world (the reader currently holds the NBT, an index array and a placement list).
    - Not done: `.nbt` (structure block), `.litematic`, move/transform of pasted selections.
+
+5. Built, in QA: noise terrain generator (`octavis-gen`: `Perlin2` + fBm, `Terrain::plan`; panel in `app/generate.rs`). Heightfield from fractal noise; three patterns for surface / soil / deep layers; area = selection bounds, else a square around the camera target. Rewrites whole columns in the area (air above the surface), one undo step, deterministic per seed. Cap 4M cells per run.
+   - Not yet: live preview, non-destructive regeneration (waits for layers: a generator layer will store these params + seed), 3D density / caves, biomes, water, trees, edge blending with existing terrain.
 
 Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 

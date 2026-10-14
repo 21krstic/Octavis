@@ -7,6 +7,7 @@ edition.workspace = true
 octavis-core = { path = "../octavis-core" }
 octavis-mesh = { path = "../octavis-mesh" }
 octavis-io = { path = "../octavis-io" }
+octavis-gen = { path = "../octavis-gen" }
 rfd = "0.15"
 glam.workspace = true
 bytemuck = "1"
