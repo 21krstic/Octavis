@@ -828,7 +828,7 @@ impl eframe::App for OctavisApp {
                 self.run_file_action(a);
             }
         }
-        egui::Panel::left("tools").resizable(false).exact_size(210.0).show(ui, |ui| {
+        egui::Panel::left("tools").resizable(false).exact_size(270.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
         });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));

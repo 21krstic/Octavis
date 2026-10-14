@@ -74,6 +74,7 @@ Milestones 1-5 done (QA-accepted; remaining items are in the backlog below). MVP
    - Not yet: stamp shape (waits for stamps/prefabs), falloff, block properties in patterns/masks (`oak_stairs[facing=north]`), noise/Y-gradient patterns.
 
 4. `.schem` (Sponge) import + export, File menu (`app/files.rs`, format code in `octavis-io/src/schem.rs`).
+   - Also reads legacy MCEdit/Schematica `.schematic` files (numeric ids + data; often saved with a `.schem` extension) via `octavis-io/src/legacy.rs`: all vanilla ids to 1.12 are translated to modern names, with variants (wood, colour, stone kind) and common orientation (stairs, slabs, logs, torches, chests, furnaces, ladders); rarer state is dropped, unknown ids become `octavis:unknown_block_<id>` with a warning.
    - Reads Sponge v1-3 (gzip or raw NBT); writes v2 (widest compatibility), root tag named `Schematic`, DataVersion 3955 (`DEFAULT_DATA_VERSION`).
    - New scene / Open (replaces scene, frames camera, asks before discarding edits) / Import (pastes at camera target on the highest block there, selects it, one undo step; schematic air does not overwrite) / Export (selection if any, else all non-air blocks).
    - Not supported yet because core has no storage for them: block entities (chest contents, signs) and entities. They are dropped on import with a status-bar warning; export writes none. Schematic `Offset` is ignored.
@@ -91,6 +92,11 @@ Milestones 1-5 done (QA-accepted; remaining items are in the backlog below). MVP
 Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 
 ## Known issues / backlog (from QA)
+
+- **Transform tools (high priority, planned next, see build order):** move / rotate / scale / flip of a selection and of a whole layer. Not built yet.
+- **Change history panel:** list every action in order (undo stack as a viewable, clickable list; jump to any point). History already stores one entry per action; needs labels and a UI.
+- **Project files:** save/load the whole project (layers incl. generator recipes, selection, settings) as `.oct` (extension follows the program name; keep it a single constant, and put a magic string + format version in the header so a rename never breaks old files). Not built yet.
+- **UI tidy-up (later):** the left panel is crowded; terrain-layer controls differ depending on whether a generator layer is selected.
 
 - **Performance on weak hardware** (dev laptop is weak): radius-16 smooth and other large operations spike the CPU. Ideas: parallelise planning with rayon, mesh dirty sections off the main thread, faster section hashing, incremental overlay meshing.
 - **Erode makes 45/90-degree patterns when repeated**: expected from the rule (it removes corners, so edges chamfer into planes). Possible later fix: randomness or a threshold option.
@@ -113,10 +119,13 @@ Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 4. `.schem` import AND export
 5. One procedural generator end-to-end
 6. Layers
-7. Texture packs (cubes, then models)
-8. Image/OBJ -> blocks, OBJ export
-9. Lua scripting
-10. Node graph, splines, parametric shapes
+7. **Transforms: move / rotate / scale / flip for selections and whole layers** (floating buffer with live preview, one undo step; exact 90-degree rotations, resampled arbitrary angles and scale; selection tool UI)
+8. Texture packs (cubes, then models)
+9. Image/OBJ -> blocks, OBJ export
+10. Lua scripting
+11. Node graph, splines, parametric shapes
+
+Alongside: project files (`.oct`), change history panel.
 
 MVP = steps 1-4. Then add the public README.
 

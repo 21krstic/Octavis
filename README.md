@@ -19,7 +19,7 @@ Octavis is not affiliated with Mojang or Microsoft and ships no Minecraft assets
 - **Layers:** stack, reorder, hide, lock, solo and merge layers. Imported schematics and generated terrain get their own layers, so they never overwrite your work. Generator layers can be tweaked and regenerated at any time without touching the layers below.
 - **Fill / delete** a selection, and **apply a brush to a selection**.
 - **Undo / redo** for everything.
-- **`.schem` import and export** (Sponge schematics): open a file, import it into the scene, or export a selection or the whole scene. Reads Sponge v1-3 and writes v2, which WorldEdit, FAWE and most other tools understand.
+- **`.schem` import and export** (Sponge schematics): open a file, import it into the scene, or export a selection or the whole scene. Reads Sponge v1-3 and writes v2, which WorldEdit, FAWE and most other tools understand. Also reads legacy MCEdit/Schematica `.schematic` files and translates their numeric block ids.
 
 Known limits: block entities (chest contents, signs) and entities are not supported yet and are dropped on import. See [docs/README.md](docs/README.md) for the full backlog.
 

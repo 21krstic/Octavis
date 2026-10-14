@@ -42,24 +42,33 @@ impl LayerCmd {
         LayerCmd::Swap { a, b }
     }
 
-    fn toggle(&mut self, stack: &mut LayerStack) {
+    /// Flips the command. `touched` collects the cells whose visible block
+    /// may change as a result.
+    fn toggle(&mut self, stack: &mut LayerStack, touched: &mut Vec<IVec3>) {
         match self {
             LayerCmd::Presence { id, index, stored } => match stored.take() {
                 Some(layer) => {
                     // A layer coming back (redo of an add, undo of a delete)
                     // becomes the one being worked on.
                     let id = layer.id;
+                    touched.extend(layer.cells.solid_cells().into_iter().map(|c| c.0));
                     stack.insert(*index, layer);
                     stack.set_active(id);
                 }
                 None => {
                     if let Some((i, layer)) = stack.remove(*id) {
+                        touched.extend(layer.cells.solid_cells().into_iter().map(|c| c.0));
                         *index = i;
                         *stored = Some(layer);
                     }
                 }
             },
-            LayerCmd::Swap { a, b } => stack.swap(*a, *b),
+            LayerCmd::Swap { a, b } => {
+                let ids: Vec<LayerId> =
+                    [*a, *b].iter().filter_map(|&i| stack.layers().get(i)).map(|l| l.id).collect();
+                touched.extend(stack.cells_of(&ids));
+                stack.swap(*a, *b);
+            }
         }
     }
 }
@@ -100,8 +109,11 @@ pub struct Undone {
     /// Block positions whose visible block changed.
     pub cells: Vec<IVec3>,
     pub selection_changed: bool,
-    /// The layer stack changed shape; the composite must be rebuilt.
+    /// The layer stack changed shape.
     pub structure_changed: bool,
+    /// Cells whose visible block may have changed because of that; recompute
+    /// the composite there.
+    pub restacked: Vec<IVec3>,
 }
 
 /// Undo/redo via the command pattern. Edits go through [`History::set`]
@@ -210,8 +222,9 @@ impl History {
         self.commit();
         let Some(mut edit) = self.undo.pop() else { return Undone::default() };
         let cells = apply(stack, world, &edit, |c| c.old);
+        let mut restacked = Vec::new();
         for cmd in edit.cmds.iter_mut().rev() {
-            cmd.toggle(stack);
+            cmd.toggle(stack, &mut restacked);
         }
         stack.fix_active();
         let selection_changed = edit.selection.as_ref().is_some_and(|d| {
@@ -220,15 +233,16 @@ impl History {
         });
         let structure_changed = !edit.cmds.is_empty();
         self.redo.push(edit);
-        Undone { cells, selection_changed, structure_changed }
+        Undone { cells, selection_changed, structure_changed, restacked }
     }
 
     /// Re-applies the latest undone edit.
     pub fn redo(&mut self, stack: &mut LayerStack, world: &mut World, selection: &mut Selection) -> Undone {
         self.commit();
         let Some(mut edit) = self.redo.pop() else { return Undone::default() };
+        let mut restacked = Vec::new();
         for cmd in edit.cmds.iter_mut() {
-            cmd.toggle(stack);
+            cmd.toggle(stack, &mut restacked);
         }
         stack.fix_active();
         let cells = apply(stack, world, &edit, |c| c.new);
@@ -238,7 +252,7 @@ impl History {
         });
         let structure_changed = !edit.cmds.is_empty();
         self.undo.push(edit);
-        Undone { cells, selection_changed, structure_changed }
+        Undone { cells, selection_changed, structure_changed, restacked }
     }
 }
 

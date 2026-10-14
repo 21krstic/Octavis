@@ -226,10 +226,13 @@ impl Editor {
         r
     }
 
-    /// Recomputes the composite from the layers and schedules a remesh.
-    pub fn rebuild(&mut self) {
-        let touched = self.layers.rebuild(&mut self.world);
-        self.dirty.extend(touched);
+    /// Recomputes the composite at just these cells and schedules a remesh
+    /// of whatever changed. Cheap when few cells are involved, which is why
+    /// layer operations only list the cells of the layers they affect.
+    fn refresh_cells(&mut self, cells: Vec<IVec3>) {
+        for p in self.layers.recompute_at(&mut self.world, cells) {
+            self.mark_dirty(p);
+        }
     }
 
     /// Adds an empty layer above the active one and makes it active.
@@ -258,13 +261,14 @@ impl Editor {
 
     /// Removes a layer (the last one cannot be removed).
     pub fn delete_layer(&mut self, id: LayerId) -> bool {
+        let cells = self.layers.cells_of(&[id]);
         let removed = self.in_edit(|ed| {
             let Some((index, layer)) = ed.layers.remove(id) else { return false };
             ed.history.push_cmd(LayerCmd::removed(index, layer));
             true
         });
         if removed {
-            self.rebuild();
+            self.refresh_cells(cells);
         }
         removed
     }
@@ -276,11 +280,13 @@ impl Editor {
         if j >= self.layers.layers().len() {
             return false;
         }
+        let ids = [self.layers.layers()[i].id, self.layers.layers()[j].id];
+        let cells = self.layers.cells_of(&ids);
         self.in_edit(|ed| {
             ed.layers.swap(i, j);
             ed.history.push_cmd(LayerCmd::swapped(i, j));
         });
-        self.rebuild();
+        self.refresh_cells(cells);
         true
     }
 
@@ -291,6 +297,7 @@ impl Editor {
         if !self.layers.editable(lower) {
             return Err("The layer below is locked, hidden or a generator layer");
         }
+        let cells = self.layers.cells_of(&[id]);
         self.in_edit(|ed| {
             for (pos, _, new) in changes {
                 ed.write(lower, pos, new);
@@ -299,21 +306,30 @@ impl Editor {
                 ed.history.push_cmd(LayerCmd::removed(index, layer));
             }
         });
-        self.rebuild();
+        self.refresh_cells(cells);
         Ok(())
     }
 
     /// Visibility is view state: not undoable.
     pub fn set_visible(&mut self, id: LayerId, visible: bool) {
+        let before = self.layers.shown_state();
         if let Some(l) = self.layers.layer_mut(id) {
             l.visible = visible;
-            self.rebuild();
         }
+        self.refresh_changed_layers(&before);
     }
 
     pub fn set_solo(&mut self, solo: Option<LayerId>) {
+        let before = self.layers.shown_state();
         self.layers.set_solo(solo);
-        self.rebuild();
+        self.refresh_changed_layers(&before);
+    }
+
+    /// Refreshes the cells of every layer whose visibility changed.
+    fn refresh_changed_layers(&mut self, before: &[(LayerId, bool)]) {
+        let changed = self.layers.changed_since(before);
+        let cells = self.layers.cells_of(&changed);
+        self.refresh_cells(cells);
     }
 
     pub fn set_locked(&mut self, id: LayerId, locked: bool) {
@@ -365,7 +381,7 @@ impl Editor {
             self.mark_dirty(p);
         }
         if u.structure_changed {
-            self.rebuild();
+            self.refresh_cells(u.restacked);
         }
         self.selection_dirty |= u.selection_changed;
     }
@@ -735,5 +751,33 @@ mod tests {
         e.redo();
         assert_eq!(e.world.get(IVec3::new(3, 3, 3)), stone);
         assert_eq!(e.layers.active(), id);
+    }
+
+    /// `cargo test --release -p octavis-app -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn timing_layer_visibility_toggles() {
+        let (mut e, stone) = editor();
+        for x in -240..240 {
+            for z in -240..240 {
+                for y in -2..=0 {
+                    e.set_block(IVec3::new(x, y, z), stone);
+                }
+            }
+        }
+        let ground = e.layers.active();
+        let small = e.add_layer("small", LayerKind::Painted);
+        for x in 0..20 {
+            for z in 0..20 {
+                e.set_block(IVec3::new(x, 1, z), stone);
+            }
+        }
+        e.take_dirty();
+        for (name, id, vis) in [("hide small", small, false), ("show small", small, true), ("hide ground", ground, false)] {
+            let start = std::time::Instant::now();
+            e.set_visible(id, vis);
+            let dirty = e.take_dirty().len();
+            println!("{name}: {:?}, {dirty} sections to remesh", start.elapsed());
+        }
     }
 }

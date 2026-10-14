@@ -251,6 +251,11 @@ pub fn read_schem(bytes: &[u8]) -> Result<Schematic, SchemError> {
     let value: Value =
         fastnbt::from_bytes_with_opts(&raw, fastnbt::DeOpts::new().max_seq_len(i32::MAX as usize)).map_err(|e| SchemError(format!("not a valid NBT file: {e}")))?;
     let mut root = compound(value, "root")?;
+    // Old MCEdit / Schematica files (numeric block ids) often carry a
+    // .schem extension too.
+    if crate::legacy::is_legacy(&root) {
+        return crate::legacy::read_legacy(root);
+    }
     // v3 (and some v2 writers) wrap everything in a "Schematic" compound.
     if let Some(inner) = root.remove("Schematic") {
         root = compound(inner, "Schematic")?;

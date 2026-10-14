@@ -239,6 +239,13 @@ impl OctavisApp {
                     self.file_msg = Some(self.regenerate_terrain(layer));
                 }
             });
+            if ui
+                .button("New terrain layer")
+                .on_hover_text("Another generator layer, using the current settings")
+                .clicked()
+            {
+                self.file_msg = Some(self.create_terrain_layer());
+            }
         }
     }
 

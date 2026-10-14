@@ -224,6 +224,44 @@ impl LayerStack {
         }
     }
 
+    /// Which layers currently contribute to the composite.
+    pub fn shown_state(&self) -> Vec<(LayerId, bool)> {
+        self.layers.iter().map(|l| (l.id, self.shown(l))).collect()
+    }
+
+    /// Layers whose contribution differs from an earlier [`shown_state`].
+    ///
+    /// [`shown_state`]: LayerStack::shown_state
+    pub fn changed_since(&self, before: &[(LayerId, bool)]) -> Vec<LayerId> {
+        self.layers
+            .iter()
+            .filter(|l| before.iter().find(|b| b.0 == l.id).is_none_or(|b| b.1 != self.shown(l)))
+            .map(|l| l.id)
+            .collect()
+    }
+
+    /// Positions of every non-air cell of the given layers.
+    pub fn cells_of(&self, ids: &[LayerId]) -> Vec<IVec3> {
+        ids.iter()
+            .filter_map(|&id| self.layer(id))
+            .flat_map(|l| l.cells.solid_cells().into_iter().map(|c| c.0))
+            .collect()
+    }
+
+    /// Recomputes the composite at just these cells. Returns those where
+    /// the visible block changed (for remeshing).
+    pub fn recompute_at(&self, world: &mut World, cells: impl IntoIterator<Item = IVec3>) -> Vec<IVec3> {
+        let mut changed = Vec::new();
+        for p in cells {
+            let visible = self.composite_at(p);
+            if world.get(p) != visible {
+                world.set(p, visible);
+                changed.push(p);
+            }
+        }
+        changed
+    }
+
     /// Recomputes the whole composite. Returns the section positions that
     /// may have changed (old and new), for remeshing.
     pub fn rebuild(&self, world: &mut World) -> Vec<IVec3> {
@@ -309,6 +347,28 @@ mod tests {
         s.set_solo(None);
         s.rebuild(&mut w);
         assert_eq!((w.get(IVec3::ZERO), w.get(IVec3::X)), (A, B));
+    }
+
+    #[test]
+    fn incremental_refresh_matches_a_full_rebuild() {
+        let (mut s, mut w, bottom, top) = stack();
+        for i in 0..30 {
+            s.write(&mut w, if i % 2 == 0 { bottom } else { top }, IVec3::new(i, 0, i % 5), if i % 3 == 0 { A } else { B });
+        }
+        let before = s.shown_state();
+        s.layer_mut(top).unwrap().visible = false;
+        assert_eq!(s.changed_since(&before), vec![top]);
+        let cells = s.cells_of(&[top]);
+        let changed = s.recompute_at(&mut w, cells);
+        assert!(!changed.is_empty());
+        let mut fresh = World::new();
+        s.rebuild(&mut fresh);
+        let (mut a, mut b) = (w.solid_cells(), fresh.solid_cells());
+        a.sort_by_key(|c| c.0.to_array());
+        b.sort_by_key(|c| c.0.to_array());
+        assert_eq!(a, b);
+        // Nothing else changed by re-running it.
+        assert!(s.recompute_at(&mut w, s.cells_of(&[top])).is_empty());
     }
 
     #[test]
