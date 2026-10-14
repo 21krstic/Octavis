@@ -32,6 +32,10 @@ pub struct Layer {
     pub visible: bool,
     pub locked: bool,
     pub kind: LayerKind,
+    /// For generator layers: the recipe (settings) the cells were generated
+    /// from, as opaque text owned by whoever defines the generator. Kept here
+    /// so undo restores recipe and cells together.
+    pub recipe: Option<String>,
     pub cells: Grid,
 }
 
@@ -62,6 +66,7 @@ impl LayerStack {
             visible: true,
             locked: false,
             kind: LayerKind::Painted,
+            recipe: None,
             cells,
         };
         Self { active: layer.id, layers: vec![layer], solo: None, next_id: 1 }
@@ -178,7 +183,7 @@ impl LayerStack {
     pub fn new_layer(&mut self, name: impl Into<String>, kind: LayerKind) -> Layer {
         let id = LayerId(self.next_id);
         self.next_id += 1;
-        Layer { id, name: name.into(), visible: true, locked: false, kind, cells: Grid::new() }
+        Layer { id, name: name.into(), visible: true, locked: false, kind, recipe: None, cells: Grid::new() }
     }
 
     /// Inserts a layer at `index` (bottom = 0), clamped to the stack.

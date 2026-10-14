@@ -164,10 +164,16 @@ pub struct OctavisApp {
     block_filter: String,
     terrain: generate::TerrainSettings,
     terrain_preview: Option<generate::TerrainPreview>,
-    /// Settings of each generator layer.
-    recipes: generate::Recipes,
-    /// Active layer last frame, to load its recipe when it changes.
-    last_active: octavis_core::LayerId,
+    /// Recipe text the terrain panel was last in step with; a different
+    /// recipe on the active generator layer (new layer, undo) reloads the panel.
+    synced_recipe: String,
+    /// Block-name boxes of the terrain panel (see `generate.rs`).
+    terrain_text: [String; 3],
+    /// Preview only the terrain skin while settings are being adjusted.
+    fast_preview: bool,
+    /// Where the terrain panel was drawn last frame; a press outside it
+    /// settles a pending terrain change.
+    terrain_panel_rect: Option<egui::Rect>,
     /// Viewport-relative cursor position at the end of the last stroke
     /// frame; the next frame's path starts here.
     last_cursor: Option<Vec2>,
@@ -184,6 +190,8 @@ impl OctavisApp {
         render::init(render_state);
 
         let world = scene::demo_world();
+        let terrain = generate::TerrainSettings::new();
+        let terrain_text = terrain.texts();
         let block = world.blocks.len().checked_sub(2).map_or(BlockId(1), |i| BlockId(i as u32));
         Self {
             editor: Editor::new(world, "Ground"),
@@ -194,7 +202,7 @@ impl OctavisApp {
             block,
             sel_mode: SelectMode::Replace,
             wand_diagonal: true,
-            show_axes: true,
+            show_axes: false,
             drag: None,
             preview: None,
             notice: None,
@@ -203,10 +211,12 @@ impl OctavisApp {
             hover: None,
             sent_hover: Vec::new(),
             block_filter: String::new(),
-            terrain: generate::TerrainSettings::new(),
+            terrain,
             terrain_preview: None,
-            recipes: Default::default(),
-            last_active: octavis_core::LayerId(0),
+            synced_recipe: String::new(),
+            terrain_text,
+            fast_preview: true,
+            terrain_panel_rect: None,
             last_cursor: None,
             file_msg: None,
             stroke_seed: 0,
@@ -383,9 +393,10 @@ impl OctavisApp {
         if self.drag.is_some() {
             return;
         }
-        // During a terrain preview, Esc cancels it and nothing else edits.
-        if self.locked() {
-            if deselect {
+        // A pending terrain change: Ctrl+Z discards it; Enter / Esc are
+        // handled by `terrain_preview_shortcut`, and nothing else edits.
+        if self.terrain_preview.is_some() {
+            if undo {
                 self.cancel_terrain_preview();
             }
             return;
@@ -402,32 +413,29 @@ impl OctavisApp {
     }
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
-        let unlocked = !self.locked();
-        ui.add_enabled_ui(unlocked, |ui| {
-            egui::CollapsingHeader::new("Layers").default_open(true).show(ui, |ui| self.layers_panel(ui));
-            ui.separator();
-            self.edit_tools_panel(ui);
-        });
+        egui::CollapsingHeader::new("Layers").default_open(true).show(ui, |ui| self.layers_panel(ui));
         ui.separator();
-        egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
+        self.edit_tools_panel(ui);
+        ui.separator();
+        let terrain = egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
             self.terrain_panel(ui);
         });
+        self.terrain_panel_rect =
+            terrain.body_response.map(|body| terrain.header_response.rect.union(body.rect));
         ui.separator();
-        ui.add_enabled_ui(unlocked, |ui| {
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(self.editor.history.can_undo(), |ui| {
-                    if ui.button("Undo").clicked() {
-                        self.editor.undo();
-                    }
-                });
-                ui.add_enabled_ui(self.editor.history.can_redo(), |ui| {
-                    if ui.button("Redo").clicked() {
-                        self.editor.redo();
-                    }
-                });
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(self.editor.history.can_undo(), |ui| {
+                if ui.button("Undo").clicked() {
+                    self.editor.undo();
+                }
             });
-            ui.small("Ctrl+Z / Ctrl+Y");
+            ui.add_enabled_ui(self.editor.history.can_redo(), |ui| {
+                if ui.button("Redo").clicked() {
+                    self.editor.redo();
+                }
+            });
         });
+        ui.small("Ctrl+Z / Ctrl+Y");
         ui.separator();
         ui.checkbox(&mut self.show_axes, "Show axes");
     }
@@ -578,10 +586,7 @@ impl OctavisApp {
             )
         });
         self.notice = None;
-        if pressed && self.locked() && response.hovered() {
-            self.notice = Some("Terrain preview is active: Apply or Cancel first");
-        }
-        if pressed && response.hovered() && self.drag.is_none() && !self.locked() {
+        if pressed && response.hovered() && self.drag.is_none() {
             if let Some(h) = hit {
                 self.begin_press(&h, ctrl, shift);
                 self.last_cursor = None;
@@ -819,8 +824,8 @@ impl eframe::App for OctavisApp {
         self.handle_shortcuts(ui.ctx());
         self.terrain_preview_shortcut(ui.ctx());
 
-        self.sync_recipe();
-        self.update_terrain_preview(ui.ctx());
+        self.settle_terrain_on_outside_press(ui.ctx());
+        self.update_terrain(ui.ctx());
         let mut action = None;
         egui::Panel::top("menu").show(ui, |ui| action = self.menu_bar(ui));
         if let Some(a) = action {

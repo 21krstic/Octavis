@@ -76,7 +76,6 @@ impl OctavisApp {
                     .clicked()
             {
                 self.editor.bake_layer(active);
-                self.recipes.remove(&active);
             }
         });
         ui.small("Top layer wins. Tools edit the active layer. Visibility, lock and names are not undoable.");

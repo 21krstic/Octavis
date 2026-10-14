@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use glam::IVec3;
 use octavis_core::{
-    BlockId, Brush, Change, History, LayerCmd, LayerId, LayerKind, LayerStack, SECTION_SIZE,
+    BlockId, Brush, History, LayerCmd, LayerId, LayerKind, LayerStack, SECTION_SIZE,
     Selection, World,
 };
 
@@ -27,12 +27,6 @@ pub enum SelectMode {
 pub struct Backup {
     layer: LayerId,
     cells: Vec<(IVec3, BlockId)>,
-}
-
-impl Backup {
-    pub fn len(&self) -> usize {
-        self.cells.len()
-    }
 }
 
 pub struct Editor {
@@ -164,19 +158,9 @@ impl Editor {
         self.end_edit();
     }
 
-    /// Writes cells into a specific layer (a generator's own layer, say) as
-    /// one undoable edit, ignoring the layer's lock state.
-    pub fn paste_to(&mut self, layer: LayerId, cells: &[(IVec3, BlockId)]) {
-        self.begin_edit();
-        for &(p, b) in cells {
-            self.write(layer, p, b);
-        }
-        self.end_edit();
-    }
-
     /// Writes cells into a layer without recording history (for a live
-    /// preview) and returns the old values so [`Editor::restore`] or
-    /// [`Editor::commit_applied`] can finish the job.
+    /// preview) and returns the old values so [`Editor::restore`] can revert
+    /// it.
     pub fn apply_untracked(&mut self, layer: LayerId, cells: &[(IVec3, BlockId)]) -> Backup {
         debug_assert!(!self.history.is_open(), "untracked write inside an open edit");
         let mut old = Vec::with_capacity(cells.len());
@@ -192,22 +176,6 @@ impl Editor {
         for (p, old) in backup.cells.into_iter().rev() {
             self.write(backup.layer, p, old);
         }
-    }
-
-    /// Turns an [`Editor::apply_untracked`] write into one undo step.
-    pub fn commit_applied(&mut self, backup: Backup) {
-        let layer = backup.layer;
-        let changes: Vec<Change> = backup
-            .cells
-            .into_iter()
-            .map(|(pos, old)| Change {
-                layer,
-                pos,
-                old,
-                new: self.layers.layer(layer).map_or(BlockId::AIR, |l| l.cells.get(pos)),
-            })
-            .collect();
-        self.history.record_applied(changes);
     }
 
     // ----------------------------------------------------------- layers
@@ -248,15 +216,48 @@ impl Editor {
         })
     }
 
-    /// Adds a layer holding `cells` as one undo step.
-    pub fn add_layer_with(&mut self, name: &str, kind: LayerKind, cells: &[(IVec3, BlockId)]) -> LayerId {
+    /// Adds a layer holding `cells` (and, for generator layers, its recipe)
+    /// as one undo step.
+    pub fn add_layer_with(
+        &mut self,
+        name: &str,
+        kind: LayerKind,
+        recipe: Option<String>,
+        cells: &[(IVec3, BlockId)],
+    ) -> LayerId {
         self.in_edit(|ed| {
             let id = ed.add_layer(name, kind);
             for &(p, b) in cells {
                 ed.write(id, p, b);
             }
+            if let Some(text) = recipe {
+                ed.set_recipe(id, text);
+            }
             id
         })
+    }
+
+    /// Replaces a layer's recipe as part of the open edit (or its own).
+    pub fn set_recipe(&mut self, id: LayerId, recipe: String) {
+        self.in_edit(|ed| {
+            if let Some(l) = ed.layers.layer_mut(id) {
+                let old = l.recipe.replace(recipe);
+                ed.history.push_cmd(LayerCmd::recipe_changed(id, old));
+            }
+        });
+    }
+
+    /// Rewrites a generator layer: its cells and recipe change together as
+    /// one undo step, ignoring the layer's lock state.
+    pub fn regenerate_layer(&mut self, id: LayerId, cells: &[(IVec3, BlockId)], recipe: String) {
+        self.in_edit(|ed| {
+            for &(p, b) in cells {
+                ed.write(id, p, b);
+            }
+            if ed.layers.layer(id).is_none_or(|l| l.recipe.as_deref() != Some(&recipe)) {
+                ed.set_recipe(id, recipe);
+            }
+        });
     }
 
     /// Removes a layer (the last one cannot be removed).
@@ -348,6 +349,7 @@ impl Editor {
     pub fn bake_layer(&mut self, id: LayerId) {
         if let Some(l) = self.layers.layer_mut(id) {
             l.kind = LayerKind::Painted;
+            l.recipe = None;
         }
     }
 
@@ -495,18 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_to_is_one_undo_step() {
-        let (mut e, stone) = editor();
-        let layer = e.layers.active();
-        e.paste_to(layer, &[(IVec3::new(1, 1, 1), stone), (IVec3::new(40, 0, 0), stone)]);
-        assert_eq!(e.world.get(IVec3::new(40, 0, 0)), stone);
-        e.undo();
-        assert_eq!(e.world.get(IVec3::new(1, 1, 1)), BlockId::AIR);
-        assert!(!e.history.can_undo());
-    }
-
-    #[test]
-    fn untracked_preview_can_be_restored_or_committed() {
+    fn untracked_preview_can_be_restored() {
         let (mut e, stone) = editor();
         let layer = e.layers.active();
         e.set_block(IVec3::ZERO, stone);
@@ -518,15 +509,27 @@ mod tests {
         e.restore(backup);
         assert_eq!(e.world.get(IVec3::ZERO), stone);
         assert_eq!(e.world.get(IVec3::new(2, 0, 0)), BlockId::AIR);
+    }
 
-        let backup = e.apply_untracked(layer, &plan);
-        e.commit_applied(backup);
-        assert!(e.history.can_undo());
+    #[test]
+    fn regenerating_a_layer_changes_cells_and_recipe_in_one_undo_step() {
+        let (mut e, stone) = editor();
+        let id = e.add_layer_with("terrain", LayerKind::Generator, Some("v1".into()), &[(IVec3::ZERO, stone)]);
+        let recipe = |e: &Editor| e.layers.layer(id).unwrap().recipe.clone();
+        assert_eq!(recipe(&e), Some("v1".into()));
+        e.regenerate_layer(id, &[(IVec3::ZERO, BlockId::AIR), (IVec3::X, stone)], "v2".into());
+        assert_eq!((recipe(&e), e.world.get(IVec3::X)), (Some("v2".into()), stone));
+        // Same recipe again records no recipe change.
+        e.regenerate_layer(id, &[(IVec3::Y, stone)], "v2".into());
         e.undo();
+        e.undo();
+        assert_eq!((recipe(&e), e.world.get(IVec3::X)), (Some("v1".into()), BlockId::AIR));
         assert_eq!(e.world.get(IVec3::ZERO), stone);
-        assert_eq!(e.world.get(IVec3::new(2, 0, 0)), BlockId::AIR);
         e.redo();
-        assert_eq!(e.world.get(IVec3::new(2, 0, 0)), stone);
+        assert_eq!((recipe(&e), e.world.get(IVec3::X)), (Some("v2".into()), stone));
+        // Baking drops the recipe.
+        e.bake_layer(id);
+        assert_eq!(recipe(&e), None);
     }
 
     #[test]
@@ -667,7 +670,7 @@ mod tests {
         let generated = e.add_layer("terrain", LayerKind::Generator);
         assert!(e.edit_blocked().is_some());
         // The generator itself can still write its own layer.
-        e.paste_to(generated, &[(IVec3::ONE, stone)]);
+        e.regenerate_layer(generated, &[(IVec3::ONE, stone)], "r".into());
         assert_eq!(e.world.get(IVec3::ONE), stone);
         e.bake_layer(generated);
         assert!(e.edit_blocked().is_none());
@@ -741,7 +744,7 @@ mod tests {
     #[test]
     fn adding_a_layer_with_content_is_one_undo_step() {
         let (mut e, stone) = editor();
-        let id = e.add_layer_with("imported", LayerKind::Painted, &[(IVec3::new(3, 3, 3), stone)]);
+        let id = e.add_layer_with("imported", LayerKind::Painted, None, &[(IVec3::new(3, 3, 3), stone)]);
         assert_eq!(e.layers.active(), id);
         assert_eq!(e.world.get(IVec3::new(3, 3, 3)), stone);
         e.undo();

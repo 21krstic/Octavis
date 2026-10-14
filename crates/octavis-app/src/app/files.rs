@@ -55,8 +55,8 @@ impl OctavisApp {
     }
 
     pub(super) fn run_file_action(&mut self, action: FileAction) {
-        // A pending terrain preview is not part of the scene yet.
-        self.cancel_terrain_preview();
+        // Settle a pending terrain change so exports and replacements see it.
+        self.commit_terrain_preview();
         let outcome = match action {
             FileAction::New => self.new_scene(),
             FileAction::Open => self.open_schem(),
@@ -113,7 +113,6 @@ impl OctavisApp {
             return None;
         }
         self.editor.replace_world(scene::demo_world(), "Ground");
-        self.recipes.clear();
         self.sent_hover.clear();
         self.after_blocks_changed();
         Some(Ok("New scene".into()))
@@ -134,7 +133,6 @@ impl OctavisApp {
         }
         world.compact();
         self.editor.replace_world(world, name.trim_end_matches(".schem"));
-        self.recipes.clear();
         self.sent_hover.clear();
         // Frame the whole build.
         self.camera.target = s.size.as_vec3() * 0.5;
@@ -167,7 +165,7 @@ impl OctavisApp {
         let origin = IVec3::new(x, ground, z);
 
         let cells = s.place(&mut self.editor.world.blocks, origin);
-        self.editor.add_layer_with(name.trim_end_matches(".schem"), octavis_core::LayerKind::Painted, &cells);
+        self.editor.add_layer_with(name.trim_end_matches(".schem"), octavis_core::LayerKind::Painted, None, &cells);
         if cells.len() as i64 <= MAX_SELECTION_CELLS {
             let sel = Selection::from_cells(cells.iter().map(|c| c.0));
             self.editor.apply_selection(crate::editor::SelectMode::Replace, &sel);

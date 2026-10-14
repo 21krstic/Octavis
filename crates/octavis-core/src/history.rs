@@ -25,6 +25,9 @@ pub enum LayerCmd {
     Presence { id: LayerId, index: usize, stored: Option<Layer> },
     /// Swap two layers' positions.
     Swap { a: usize, b: usize },
+    /// Swap a generator layer's recipe with `other` (the value that is not
+    /// currently in the layer).
+    Recipe { layer: LayerId, other: Option<String> },
 }
 
 impl LayerCmd {
@@ -40,6 +43,11 @@ impl LayerCmd {
 
     pub fn swapped(a: usize, b: usize) -> Self {
         LayerCmd::Swap { a, b }
+    }
+
+    /// A generator layer's recipe was just replaced; `old` is what it was.
+    pub fn recipe_changed(layer: LayerId, old: Option<String>) -> Self {
+        LayerCmd::Recipe { layer, other: old }
     }
 
     /// Flips the command. `touched` collects the cells whose visible block
@@ -68,6 +76,11 @@ impl LayerCmd {
                     [*a, *b].iter().filter_map(|&i| stack.layers().get(i)).map(|l| l.id).collect();
                 touched.extend(stack.cells_of(&ids));
                 stack.swap(*a, *b);
+            }
+            LayerCmd::Recipe { layer, other } => {
+                if let Some(l) = stack.layer_mut(*layer) {
+                    std::mem::swap(&mut l.recipe, other);
+                }
             }
         }
     }
@@ -498,6 +511,23 @@ mod tests {
         assert_eq!(f.s.index_of(id), Some(1));
         f.redo(&mut sel);
         assert!(f.s.layer(id).is_none());
+    }
+
+    #[test]
+    fn recipe_changes_undo_and_redo_with_the_cells() {
+        let mut f = Fixture::new();
+        let mut sel = Selection::new();
+        f.s.layer_mut(f.layer).unwrap().recipe = Some("v1".into());
+        f.h.begin();
+        f.set(IVec3::ZERO, f.a);
+        let old = f.s.layer_mut(f.layer).unwrap().recipe.replace("v2".into());
+        f.h.push_cmd(LayerCmd::recipe_changed(f.layer, old));
+        f.h.commit();
+        let recipe = |f: &Fixture| f.s.layer(f.layer).unwrap().recipe.clone();
+        f.undo(&mut sel);
+        assert_eq!((recipe(&f), f.w.get(IVec3::ZERO)), (Some("v1".into()), BlockId::AIR));
+        f.redo(&mut sel);
+        assert_eq!((recipe(&f), f.w.get(IVec3::ZERO)), (Some("v2".into()), f.a));
     }
 
     #[test]

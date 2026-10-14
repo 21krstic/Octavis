@@ -1,17 +1,18 @@
-//! Terrain generator panel, with a live preview.
+//! Terrain generator panel.
 //!
 //! Terrain lives in its own *generator layer*: the layer's cells are the
-//! cached result and the settings (the recipe) are kept in
-//! `OctavisApp::recipes`. Changing settings and regenerating rewrites only
-//! that layer, so layers below (and your hand work) are untouched.
+//! cached result and the settings (the recipe) are stored in the layer, so
+//! undo restores both together.
 //!
-//! The preview writes the terrain into the generator layer without
-//! recording history and keeps the old values, so it can be reverted
-//! (Cancel), recomputed when a setting changes, or committed as one undo
-//! step (Apply). Editing tools are locked while it is active, so nothing
-//! else can touch the previewed cells.
+//! Editing works without buttons. Touch any setting while a generator layer
+//! is active and the terrain *previews* live (a cheap skin-only version by
+//! default). When you stop changing things for a moment, or click anywhere
+//! outside the panel, the full terrain is generated and committed as one
+//! undo step. Esc discards a pending change, Enter commits it at once.
+//!
+//! While a change is pending the preview is written into the layer without
+//! history and the old cells are kept, so it can be reverted or replaced.
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -24,10 +25,12 @@ use crate::editor::Backup;
 
 /// Minimum time between preview recomputations while a slider is dragged.
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(150);
+/// How long settings must stay unchanged before the full terrain is committed.
+const COMMIT_DELAY: Duration = Duration::from_millis(700);
 
-/// Generator options as edited in the panel. Patterns stay text until
-/// generation so half-typed names never reach the block table.
-#[derive(Clone, PartialEq)]
+/// Generator options. Patterns are text until generation so half-typed
+/// names never reach the block table.
+#[derive(Clone, PartialEq, Debug)]
 pub(super) struct TerrainSettings {
     seed: u32,
     /// Manual area: a square of `size` centred on (`centre_x`, `centre_z`),
@@ -39,9 +42,6 @@ pub(super) struct TerrainSettings {
     depth: i32,
     /// Fit to the selection (its bounds, and only its cells) when one exists.
     use_selection: bool,
-    /// Preview only the visible skin of the terrain (much faster); Apply
-    /// always generates the full result.
-    low_preview: bool,
     scale: f32,
     octaves: u32,
     persistence: f32,
@@ -62,7 +62,6 @@ impl TerrainSettings {
             size: 128,
             depth: 12,
             use_selection: true,
-            low_preview: true,
             scale: 64.0,
             octaves: 4,
             persistence: 0.5,
@@ -74,43 +73,87 @@ impl TerrainSettings {
             fill: "stone".into(),
         }
     }
+
+    /// The three block-name boxes' starting text.
+    pub(super) fn texts(&self) -> [String; 3] {
+        [self.surface.clone(), self.soil.clone(), self.fill.clone()]
+    }
+
+    /// The recipe as stored in a layer: one `key=value` per line.
+    fn to_text(&self) -> String {
+        format!(
+            "terrain v1\nseed={}\ncentre_x={}\ncentre_z={}\nsize={}\ndepth={}\nuse_selection={}\nscale={}\noctaves={}\npersistence={}\nbase={}\namplitude={}\nsoil_depth={}\nsurface={}\nsoil={}\nfill={}\n",
+            self.seed,
+            self.centre_x,
+            self.centre_z,
+            self.size,
+            self.depth,
+            self.use_selection,
+            self.scale,
+            self.octaves,
+            self.persistence,
+            self.base,
+            self.amplitude,
+            self.soil_depth,
+            self.surface,
+            self.soil,
+            self.fill
+        )
+    }
+
+    /// Reads a recipe; unknown or missing keys keep their defaults.
+    fn from_text(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != "terrain v1" {
+            return None;
+        }
+        let mut s = Self::new();
+        for line in lines {
+            let Some((key, value)) = line.split_once('=') else { continue };
+            match key {
+                "seed" => s.seed = value.parse().ok()?,
+                "centre_x" => s.centre_x = value.parse().ok()?,
+                "centre_z" => s.centre_z = value.parse().ok()?,
+                "size" => s.size = value.parse().ok()?,
+                "depth" => s.depth = value.parse().ok()?,
+                "use_selection" => s.use_selection = value.parse().ok()?,
+                "scale" => s.scale = value.parse().ok()?,
+                "octaves" => s.octaves = value.parse().ok()?,
+                "persistence" => s.persistence = value.parse().ok()?,
+                "base" => s.base = value.parse().ok()?,
+                "amplitude" => s.amplitude = value.parse().ok()?,
+                "soil_depth" => s.soil_depth = value.parse().ok()?,
+                "surface" => s.surface = value.into(),
+                "soil" => s.soil = value.into(),
+                "fill" => s.fill = value.into(),
+                _ => {}
+            }
+        }
+        Some(s)
+    }
 }
 
-/// Settings of every generator layer, by layer.
-pub(super) type Recipes = HashMap<LayerId, TerrainSettings>;
-
-/// A running preview.
+/// A pending (uncommitted) terrain change.
 pub(super) struct TerrainPreview {
     /// The generator layer being previewed into.
     layer: LayerId,
     /// Old values of every cell the preview wrote.
     backup: Option<Backup>,
-    /// Settings the current preview was generated from.
+    /// Settings the current preview shows.
     shown: TerrainSettings,
+    /// When the settings were last seen to change.
+    last_change: Instant,
     last_update: Instant,
 }
 
 impl OctavisApp {
-    /// Editing tools are locked while a terrain preview is showing.
-    pub(super) fn locked(&self) -> bool {
-        self.terrain_preview.is_some()
-    }
-
-    /// The active layer, if it is a generator layer.
-    fn active_generator(&self) -> Option<LayerId> {
-        let id = self.editor.layers.active();
-        self.editor.layers.layer(id).filter(|l| l.kind == LayerKind::Generator).map(|l| l.id)
-    }
-
-    /// Loads a generator layer's recipe into the panel when it becomes active.
-    pub(super) fn sync_recipe(&mut self) {
-        let active = self.editor.layers.active();
-        if active != self.last_active {
-            self.last_active = active;
-            if let Some(recipe) = self.recipes.get(&active) {
-                self.terrain = recipe.clone();
-            }
+    /// The active layer and its recipe, if it is a generator layer.
+    fn active_generator(&self) -> Option<(LayerId, String)> {
+        let l = self.editor.layers.layer(self.editor.layers.active())?;
+        if l.kind != LayerKind::Generator {
+            return None;
         }
+        l.recipe.clone().map(|r| (l.id, r))
     }
 
     /// True if the terrain is clipped to the selection.
@@ -131,10 +174,15 @@ impl OctavisApp {
         (min, max)
     }
 
+    /// Replaces the panel's settings (and the text boxes) with a recipe.
+    fn load_terrain_settings(&mut self, settings: TerrainSettings) {
+        self.terrain_text = settings.texts();
+        self.terrain = settings;
+    }
+
     pub(super) fn terrain_panel(&mut self, ui: &mut egui::Ui) {
         let (min, max) = self.terrain_area();
         let has_selection = !self.editor.selection.is_empty();
-        let previewing = self.locked();
         let generator = self.active_generator();
         let camera_cell = self.camera.target.floor().as_ivec3();
         let t = &mut self.terrain;
@@ -178,73 +226,53 @@ impl OctavisApp {
         ));
 
         ui.separator();
-        for (label, text) in [
-            ("Surface block(s)", &mut t.surface),
-            ("Soil block(s)", &mut t.soil),
-            ("Deep block(s)", &mut t.fill),
-        ] {
+        // Block names are edited in separate buffers and only reach the
+        // settings once they are complete: every name already in the scene
+        // applies at once, a brand-new name when you press Enter or leave
+        // the box. Otherwise typing "moss" would create "m", "mo", "mos".
+        for (i, label) in ["Surface block(s)", "Soil block(s)", "Deep block(s)"].into_iter().enumerate() {
             ui.label(label);
-            ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-        }
-        let texts = [t.surface.clone(), t.soil.clone(), t.fill.clone()];
-        for text in &texts {
-            if let Err(e) = Pattern::validate(text) {
-                ui.colored_label(egui::Color32::from_rgb(255, 110, 90), format!("{text}: {e}"));
-            } else {
-                let new = Pattern::unknown_names(text, &self.editor.world.blocks);
-                if !new.is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 170, 60),
-                        format!("Creates new block type: {}", new.join(", ")),
-                    );
+            let response =
+                ui.add(egui::TextEdit::singleline(&mut self.terrain_text[i]).desired_width(f32::INFINITY));
+            let text = self.terrain_text[i].clone();
+            match Pattern::validate(&text) {
+                Err(e) => {
+                    ui.colored_label(egui::Color32::from_rgb(255, 110, 90), e);
+                }
+                Ok(()) => {
+                    let new = Pattern::unknown_names(&text, &self.editor.world.blocks);
+                    if !new.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 170, 60),
+                            format!("Creates new block type: {}", new.join(", ")),
+                        );
+                    }
+                    if new.is_empty() || response.lost_focus() {
+                        let field = [&mut self.terrain.surface, &mut self.terrain.soil, &mut self.terrain.fill];
+                        *field[i] = text;
+                    }
                 }
             }
         }
 
         ui.separator();
-        let Some(layer) = generator else {
-            ui.small("Terrain is generated into its own layer, so it never overwrites your work.");
-            if ui.button("New terrain layer").on_hover_text("Creates a generator layer and generates into it").clicked() {
-                self.file_msg = Some(self.create_terrain_layer());
+        ui.checkbox(&mut self.fast_preview, "Fast preview (skin only)").on_hover_text(
+            "While you adjust settings, show only the visible skin of the terrain. The full terrain is still generated when you stop.",
+        );
+        match generator {
+            Some((layer, _)) => {
+                let name = self.editor.layers.layer(layer).map(|l| l.name.clone()).unwrap_or_default();
+                ui.label(format!("Generator layer: {name}"));
+                ui.small("Changes preview live and commit when you pause or click elsewhere. Esc discards, Enter commits now.");
+                if ui.button("New terrain layer").on_hover_text("Another generator layer, using these settings").clicked() {
+                    self.file_msg = Some(self.create_terrain_layer());
+                }
             }
-            return;
-        };
-        let name = self.editor.layers.layer(layer).map(|l| l.name.clone()).unwrap_or_default();
-        ui.label(format!("Generator layer: {name}"));
-        ui.checkbox(&mut self.terrain.low_preview, "Low-quality preview")
-            .on_hover_text("Preview only the visible skin of the terrain: much faster. Apply still generates everything.");
-        if previewing {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 200, 80),
-                "Previewing. Tools are locked until you apply or cancel.",
-            );
-            ui.horizontal(|ui| {
-                if ui.button("Apply (Enter)").on_hover_text("Keep the terrain (one undo step)").clicked() {
-                    self.apply_terrain_preview();
+            None => {
+                ui.small("Terrain is generated into its own layer, so it never overwrites your work.");
+                if ui.button("New terrain layer").on_hover_text("Creates a generator layer and generates into it").clicked() {
+                    self.file_msg = Some(self.create_terrain_layer());
                 }
-                if ui.button("Cancel (Esc)").clicked() {
-                    self.cancel_terrain_preview();
-                }
-            });
-        } else {
-            ui.horizontal(|ui| {
-                if ui.button("Preview").on_hover_text("Show the terrain live while you adjust settings").clicked() {
-                    self.start_terrain_preview(layer);
-                }
-                if ui
-                    .button("Regenerate")
-                    .on_hover_text("Rewrites this layer with the current settings; one undo step")
-                    .clicked()
-                {
-                    self.file_msg = Some(self.regenerate_terrain(layer));
-                }
-            });
-            if ui
-                .button("New terrain layer")
-                .on_hover_text("Another generator layer, using the current settings")
-                .clicked()
-            {
-                self.file_msg = Some(self.create_terrain_layer());
             }
         }
     }
@@ -296,37 +324,69 @@ impl OctavisApp {
 
     /// Creates a generator layer from the panel's settings, as one undo step.
     fn create_terrain_layer(&mut self) -> Result<String, String> {
+        // A pending change belonged to the old layer; drop it but keep the
+        // panel's settings, which are what the new layer should get.
+        if let Some(preview) = self.terrain_preview.take() {
+            if let Some(backup) = preview.backup {
+                self.editor.restore(backup);
+            }
+        }
         let cells = self.fresh_terrain(Detail::Full)?;
         let name = format!("Terrain (seed {})", self.terrain.seed);
-        let id = self.editor.add_layer_with(&name, LayerKind::Generator, &cells);
-        self.recipes.insert(id, self.terrain.clone());
-        self.last_active = id;
-        Ok(format!("Created \"{name}\": {} blocks. Adjust the settings, then Preview or Regenerate.", cells.len()))
+        let recipe = self.terrain.to_text();
+        self.editor.add_layer_with(&name, LayerKind::Generator, Some(recipe.clone()), &cells);
+        self.synced_recipe = recipe;
+        Ok(format!("Created \"{name}\": {} blocks. Change any setting to adjust it.", cells.len()))
     }
 
-    /// One-shot regeneration into a generator layer: one undo step.
-    fn regenerate_terrain(&mut self, layer: LayerId) -> Result<String, String> {
-        let plan = self.layer_plan(layer, Detail::Full)?;
-        self.recipes.insert(layer, self.terrain.clone());
-        if plan.is_empty() {
-            return Ok("Terrain already matches; nothing changed".into());
-        }
-        self.editor.paste_to(layer, &plan);
-        Ok(format!("Regenerated terrain (seed {}): {} blocks changed. Ctrl+Z undoes it.", self.terrain.seed, plan.len()))
-    }
-
-    pub(super) fn start_terrain_preview(&mut self, layer: LayerId) {
+    /// Call every frame. Keeps the panel and the active generator layer in
+    /// step: loads a layer's recipe when it becomes active (or after undo),
+    /// starts a preview when the settings are edited, refreshes it while
+    /// they keep changing, and commits it once they settle.
+    pub(super) fn update_terrain(&mut self, ctx: &egui::Context) {
         if self.terrain_preview.is_some() {
+            self.update_pending_terrain(ctx);
             return;
         }
-        self.editor.end_edit();
-        self.terrain_preview = Some(TerrainPreview {
-            layer,
-            backup: None,
-            shown: self.terrain.clone(),
-            last_update: Instant::now(),
-        });
-        self.refresh_terrain_preview();
+        let Some((layer, recipe)) = self.active_generator() else { return };
+        if recipe != self.synced_recipe {
+            // A different layer, or undo/redo: show that layer's recipe.
+            if let Some(settings) = TerrainSettings::from_text(&recipe) {
+                self.load_terrain_settings(settings);
+            }
+            self.synced_recipe = recipe;
+        } else if self.terrain.to_text() != recipe {
+            self.terrain_preview = Some(TerrainPreview {
+                layer,
+                backup: None,
+                shown: self.terrain.clone(),
+                last_change: Instant::now(),
+                last_update: Instant::now() - PREVIEW_INTERVAL,
+            });
+            self.refresh_terrain_preview();
+            ctx.request_repaint_after(COMMIT_DELAY);
+        }
+    }
+
+    fn update_pending_terrain(&mut self, ctx: &egui::Context) {
+        let Some(preview) = self.terrain_preview.as_mut() else { return };
+        if preview.shown != self.terrain {
+            // Still being edited: restart the settle timer, refresh at a sane rate.
+            preview.last_change = Instant::now();
+            let wait = PREVIEW_INTERVAL.saturating_sub(preview.last_update.elapsed());
+            if wait.is_zero() {
+                self.refresh_terrain_preview();
+            } else {
+                ctx.request_repaint_after(wait);
+            }
+        } else {
+            let idle = preview.last_change.elapsed();
+            if idle >= COMMIT_DELAY {
+                self.commit_terrain_preview();
+            } else {
+                ctx.request_repaint_after(COMMIT_DELAY - idle);
+            }
+        }
     }
 
     /// Recomputes the preview from the current settings.
@@ -336,7 +396,7 @@ impl OctavisApp {
         if let Some(old) = preview.backup.take() {
             self.editor.restore(old);
         }
-        let detail = if self.terrain.low_preview { Detail::Shell } else { Detail::Full };
+        let detail = if self.fast_preview { Detail::Shell } else { Detail::Full };
         let plan = self.layer_plan(layer, detail);
         let settings = self.terrain.clone();
         let backup = match plan {
@@ -356,56 +416,77 @@ impl OctavisApp {
         }
     }
 
-    /// Call every frame: refreshes the preview when settings changed, at
-    /// most every [`PREVIEW_INTERVAL`] so dragging a slider stays responsive.
-    pub(super) fn update_terrain_preview(&mut self, ctx: &egui::Context) {
-        let Some(preview) = &self.terrain_preview else { return };
-        if preview.shown == self.terrain {
+    /// Shows the committed recipe of `layer` in the panel again.
+    fn reload_committed_recipe(&mut self, layer: LayerId) {
+        let recipe = self.editor.layers.layer(layer).and_then(|l| l.recipe.clone());
+        if let Some(settings) = recipe.as_deref().and_then(TerrainSettings::from_text) {
+            self.load_terrain_settings(settings);
+        }
+    }
+
+    /// Discards a pending change and shows the layer's committed recipe again.
+    pub(super) fn cancel_terrain_preview(&mut self) {
+        let Some(preview) = self.terrain_preview.take() else { return };
+        if let Some(backup) = preview.backup {
+            self.editor.restore(backup);
+        }
+        self.reload_committed_recipe(preview.layer);
+    }
+
+    /// Generates the full terrain for the pending change and commits it
+    /// (cells and recipe together) as one undo step.
+    pub(super) fn commit_terrain_preview(&mut self) {
+        let Some(preview) = self.terrain_preview.take() else { return };
+        let layer = preview.layer;
+        if let Some(backup) = preview.backup {
+            self.editor.restore(backup);
+        }
+        // Use what is in the panel now, even if the last refresh lagged behind.
+        match self.layer_plan(layer, Detail::Full) {
+            Ok(plan) => {
+                let recipe = self.terrain.to_text();
+                self.editor.regenerate_layer(layer, &plan, recipe.clone());
+                self.synced_recipe = recipe;
+                self.file_msg = Some(Ok(format!(
+                    "Terrain updated (seed {}): {} blocks changed. Ctrl+Z undoes it.",
+                    self.terrain.seed,
+                    plan.len()
+                )));
+            }
+            Err(e) => {
+                self.file_msg = Some(Err(e));
+                self.reload_committed_recipe(layer);
+            }
+        }
+    }
+
+    /// A press anywhere but the terrain panel (viewport, another panel, a
+    /// menu) settles a pending terrain change first, so that action sees the
+    /// finished terrain.
+    pub(super) fn settle_terrain_on_outside_press(&mut self, ctx: &egui::Context) {
+        if self.terrain_preview.is_none() || !ctx.input(|i| i.pointer.any_pressed()) {
             return;
         }
-        let wait = PREVIEW_INTERVAL.saturating_sub(preview.last_update.elapsed());
-        if wait.is_zero() {
-            self.refresh_terrain_preview();
-        } else {
-            ctx.request_repaint_after(wait);
+        let inside = ctx
+            .input(|i| i.pointer.interact_pos())
+            .zip(self.terrain_panel_rect)
+            .is_some_and(|(p, r)| r.contains(p));
+        if !inside {
+            self.commit_terrain_preview();
         }
     }
 
-    pub(super) fn cancel_terrain_preview(&mut self) {
-        if let Some(preview) = self.terrain_preview.take() {
-            if let Some(backup) = preview.backup {
-                self.editor.restore(backup);
-            }
-        }
-    }
-
-    fn apply_terrain_preview(&mut self) {
-        let Some(preview) = self.terrain_preview.take() else { return };
-        let (layer, seed) = (preview.layer, self.terrain.seed);
-        self.recipes.insert(layer, self.terrain.clone());
-        if self.terrain.low_preview || preview.shown != self.terrain || preview.backup.is_none() {
-            // The preview is only a skin, or is stale: generate the real thing.
-            if let Some(backup) = preview.backup {
-                self.editor.restore(backup);
-            }
-            self.file_msg = Some(match self.layer_plan(layer, Detail::Full) {
-                Ok(plan) => {
-                    self.editor.paste_to(layer, &plan);
-                    Ok(format!("Applied terrain (seed {seed}): {} blocks changed. Ctrl+Z undoes it.", plan.len()))
-                }
-                Err(e) => Err(e),
-            });
-        } else if let Some(backup) = preview.backup {
-            let n = backup.len();
-            self.editor.commit_applied(backup);
-            self.file_msg = Some(Ok(format!("Applied terrain (seed {seed}): {n} blocks changed. Ctrl+Z undoes it.")));
-        }
-    }
-
-    /// Enter applies a running preview (unless a text box is being edited).
+    /// Enter commits and Esc discards a pending terrain change (unless a
+    /// text box is being edited).
     pub(super) fn terrain_preview_shortcut(&mut self, ctx: &egui::Context) {
-        if self.locked() && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-            self.apply_terrain_preview();
+        if self.terrain_preview.is_none() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let (enter, esc) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        if enter {
+            self.commit_terrain_preview();
+        } else if esc {
+            self.cancel_terrain_preview();
         }
     }
 }
@@ -448,5 +529,21 @@ mod tests {
             layer.set(p, blk);
         }
         assert!(replace_cells(&layer, vec![(IVec3::ZERO, a), (IVec3::X, b), (IVec3::new(2, 0, 0), b)]).is_empty());
+    }
+
+    #[test]
+    fn recipe_text_roundtrips_and_tolerates_unknown_keys() {
+        let mut s = TerrainSettings::new();
+        s.seed = 4242;
+        s.scale = 33.5;
+        s.use_selection = false;
+        s.surface = "70%moss_block, 30%grass_block".into();
+        s.centre_x = -17;
+        let text = s.to_text();
+        assert_eq!(TerrainSettings::from_text(&text), Some(s.clone()));
+        let extended = format!("{text}future_key=whatever\nnot a pair\n");
+        assert_eq!(TerrainSettings::from_text(&extended), Some(s));
+        assert!(TerrainSettings::from_text("something else").is_none());
+        assert!(TerrainSettings::from_text("terrain v1\nseed=notanumber\n").is_none());
     }
 }
