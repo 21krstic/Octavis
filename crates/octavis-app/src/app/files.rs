@@ -36,8 +36,10 @@ fn warnings_suffix(s: &Schematic) -> String {
 impl OctavisApp {
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) -> Option<FileAction> {
         let mut action = None;
+        // Files can't be replaced or exported mid terrain change.
+        let pending = self.terrain_preview.is_some();
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
+            ui.add_enabled_ui(!pending, |ui| ui.menu_button("File", |ui| {
                 for (a, label) in [
                     (FileAction::New, "New scene"),
                     (FileAction::Open, "Open .schem..."),
@@ -49,14 +51,12 @@ impl OctavisApp {
                         ui.close();
                     }
                 }
-            });
+            }));
         });
         action
     }
 
     pub(super) fn run_file_action(&mut self, action: FileAction) {
-        // Settle a pending terrain change so exports and replacements see it.
-        self.commit_terrain_preview();
         let outcome = match action {
             FileAction::New => self.new_scene(),
             FileAction::Open => self.open_schem(),

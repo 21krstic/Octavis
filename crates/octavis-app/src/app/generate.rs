@@ -4,11 +4,11 @@
 //! cached result and the settings (the recipe) are stored in the layer, so
 //! undo restores both together.
 //!
-//! Editing works without buttons. Touch any setting while a generator layer
-//! is active and the terrain *previews* live (a cheap skin-only version by
-//! default). When you stop changing things for a moment, or click anywhere
-//! outside the panel, the full terrain is generated and committed as one
-//! undo step. Esc discards a pending change, Enter commits it at once.
+//! Touch any setting while a generator layer is active and the terrain
+//! *previews* live (a cheap skin-only version by default). The change stays
+//! pending, with layers, tools, history and files locked, until you press
+//! Apply (or Enter), which generates the full terrain and commits it as one
+//! undo step, or Cancel (or Esc), which restores the old terrain and settings.
 //!
 //! While a change is pending the preview is written into the layer without
 //! history and the old cells are kept, so it can be reverted or replaced.
@@ -25,8 +25,6 @@ use crate::editor::Backup;
 
 /// Minimum time between preview recomputations while a slider is dragged.
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(150);
-/// How long settings must stay unchanged before the full terrain is committed.
-const COMMIT_DELAY: Duration = Duration::from_millis(700);
 
 /// Generator options. Patterns are text until generation so half-typed
 /// names never reach the block table.
@@ -141,8 +139,6 @@ pub(super) struct TerrainPreview {
     backup: Option<Backup>,
     /// Settings the current preview shows.
     shown: TerrainSettings,
-    /// When the settings were last seen to change.
-    last_change: Instant,
     last_update: Instant,
 }
 
@@ -185,6 +181,20 @@ impl OctavisApp {
         let has_selection = !self.editor.selection.is_empty();
         let generator = self.active_generator();
         let camera_cell = self.camera.target.floor().as_ivec3();
+        let pending = self.terrain_preview.is_some();
+        // Always drawn (greyed out when idle) so the panel never shifts under
+        // a slider that is being dragged.
+        ui.horizontal(|ui| {
+            if ui.add_enabled(pending, egui::Button::new("Apply")).on_hover_text("Generate the full terrain and keep it (Enter)").clicked() {
+                self.commit_terrain_preview();
+            }
+            if ui.add_enabled(pending, egui::Button::new("Cancel")).on_hover_text("Go back to the previous terrain and settings (Esc)").clicked() {
+                self.cancel_terrain_preview();
+            }
+            if pending {
+                ui.colored_label(egui::Color32::from_rgb(255, 170, 60), "Pending: layers and tools locked");
+            }
+        });
         let t = &mut self.terrain;
         ui.horizontal(|ui| {
             ui.label("Seed");
@@ -257,20 +267,28 @@ impl OctavisApp {
 
         ui.separator();
         ui.checkbox(&mut self.fast_preview, "Fast preview (skin only)").on_hover_text(
-            "While you adjust settings, show only the visible skin of the terrain. The full terrain is still generated when you stop.",
+            "While you adjust settings, show only the visible skin of the terrain. The full terrain is generated when you apply.",
         );
         match generator {
             Some((layer, _)) => {
                 let name = self.editor.layers.layer(layer).map(|l| l.name.clone()).unwrap_or_default();
                 ui.label(format!("Generator layer: {name}"));
-                ui.small("Changes preview live and commit when you pause or click elsewhere. Esc discards, Enter commits now.");
-                if ui.button("New terrain layer").on_hover_text("Another generator layer, using these settings").clicked() {
+                ui.small("Changes preview live. Apply (Enter) keeps them, Cancel (Esc) goes back.");
+                if ui
+                    .add_enabled(!pending, egui::Button::new("New terrain layer"))
+                    .on_hover_text("Another generator layer, using these settings")
+                    .clicked()
+                {
                     self.file_msg = Some(self.create_terrain_layer());
                 }
             }
             None => {
                 ui.small("Terrain is generated into its own layer, so it never overwrites your work.");
-                if ui.button("New terrain layer").on_hover_text("Creates a generator layer and generates into it").clicked() {
+                if ui
+                    .add_enabled(!pending, egui::Button::new("New terrain layer"))
+                    .on_hover_text("Creates a generator layer and generates into it")
+                    .clicked()
+                {
                     self.file_msg = Some(self.create_terrain_layer());
                 }
             }
@@ -341,8 +359,8 @@ impl OctavisApp {
 
     /// Call every frame. Keeps the panel and the active generator layer in
     /// step: loads a layer's recipe when it becomes active (or after undo),
-    /// starts a preview when the settings are edited, refreshes it while
-    /// they keep changing, and commits it once they settle.
+    /// starts a preview when the settings are edited and refreshes it while
+    /// they keep changing. Committing is up to the user (Apply / Enter).
     pub(super) fn update_terrain(&mut self, ctx: &egui::Context) {
         if self.terrain_preview.is_some() {
             self.update_pending_terrain(ctx);
@@ -360,31 +378,21 @@ impl OctavisApp {
                 layer,
                 backup: None,
                 shown: self.terrain.clone(),
-                last_change: Instant::now(),
                 last_update: Instant::now() - PREVIEW_INTERVAL,
             });
             self.refresh_terrain_preview();
-            ctx.request_repaint_after(COMMIT_DELAY);
         }
     }
 
     fn update_pending_terrain(&mut self, ctx: &egui::Context) {
-        let Some(preview) = self.terrain_preview.as_mut() else { return };
+        let Some(preview) = self.terrain_preview.as_ref() else { return };
         if preview.shown != self.terrain {
-            // Still being edited: restart the settle timer, refresh at a sane rate.
-            preview.last_change = Instant::now();
+            // Still being edited: refresh at a sane rate.
             let wait = PREVIEW_INTERVAL.saturating_sub(preview.last_update.elapsed());
             if wait.is_zero() {
                 self.refresh_terrain_preview();
             } else {
                 ctx.request_repaint_after(wait);
-            }
-        } else {
-            let idle = preview.last_change.elapsed();
-            if idle >= COMMIT_DELAY {
-                self.commit_terrain_preview();
-            } else {
-                ctx.request_repaint_after(COMMIT_DELAY - idle);
             }
         }
     }
@@ -460,24 +468,8 @@ impl OctavisApp {
         }
     }
 
-    /// A press anywhere but the terrain panel (viewport, another panel, a
-    /// menu) settles a pending terrain change first, so that action sees the
-    /// finished terrain.
-    pub(super) fn settle_terrain_on_outside_press(&mut self, ctx: &egui::Context) {
-        if self.terrain_preview.is_none() || !ctx.input(|i| i.pointer.any_pressed()) {
-            return;
-        }
-        let inside = ctx
-            .input(|i| i.pointer.interact_pos())
-            .zip(self.terrain_panel_rect)
-            .is_some_and(|(p, r)| r.contains(p));
-        if !inside {
-            self.commit_terrain_preview();
-        }
-    }
-
-    /// Enter commits and Esc discards a pending terrain change (unless a
-    /// text box is being edited).
+    /// Enter applies and Esc cancels a pending terrain change (unless a
+    /// text box is being edited; Enter there finishes the block name first).
     pub(super) fn terrain_preview_shortcut(&mut self, ctx: &egui::Context) {
         if self.terrain_preview.is_none() || ctx.egui_wants_keyboard_input() {
             return;
