@@ -4,6 +4,7 @@
 pub mod block;
 pub mod brush;
 pub mod history;
+pub mod layers;
 pub mod raycast;
 pub mod section;
 pub mod selection;
@@ -11,8 +12,9 @@ pub mod world;
 
 pub use block::{BlockId, BlockState, BlockTable};
 pub use brush::{Brush, BrushMode, Cmp, Mask, Pattern, Shape};
-pub use history::{Change, History, Undone};
+pub use history::{Change, History, LayerCmd, Undone};
+pub use layers::{CellWrite, Layer, LayerId, LayerKind, LayerStack};
 pub use raycast::{RayHit, raycast, raycast_with};
 pub use section::{SECTION_SIZE, SECTION_VOLUME, Section};
 pub use selection::{Connectivity, Selection, SelectionDelta};
-pub use world::World;
+pub use world::{Grid, World};

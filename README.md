@@ -16,6 +16,7 @@ Octavis is not affiliated with Mojang or Microsoft and ships no Minecraft assets
   - **Patterns** decide what gets written: `70%stone, 30%dirt`.
   - A whole stroke is one undo step.
 - **Terrain generator:** seeded fractal-noise heightmaps with configurable scale, roughness, height and block layers (grass / soil / stone, or any patterns), a live preview, and generation into a manual area or the exact cells of a selection. Same seed, same terrain on every machine.
+- **Layers:** stack, reorder, hide, lock, solo and merge layers. Imported schematics and generated terrain get their own layers, so they never overwrite your work. Generator layers can be tweaked and regenerated at any time without touching the layers below.
 - **Fill / delete** a selection, and **apply a brush to a selection**.
 - **Undo / redo** for everything.
 - **`.schem` import and export** (Sponge schematics): open a file, import it into the scene, or export a selection or the whole scene. Reads Sponge v1-3 and writes v2, which WorldEdit, FAWE and most other tools understand.
@@ -52,11 +53,10 @@ On Windows the app uses DirectX 12; set `WGPU_BACKEND` to override.
 Roughly in order:
 
 1. More generators (caves, 3D density fields, shapes)
-2. Layers, including non-destructive generator layers
-3. Texture packs, loaded from a plain folder you extract yourself (Octavis never bundles Mojang assets; an open placeholder pack is the long-term goal)
-4. Image and OBJ to blocks; OBJ export
-5. Lua scripting
-6. Node-graph generators, splines and parametric shapes
+2. Texture packs, loaded from a plain folder you extract yourself (Octavis never bundles Mojang assets; an open placeholder pack is the long-term goal)
+3. Image and OBJ to blocks; OBJ export
+4. Lua scripting
+5. Node-graph generators, splines and parametric shapes
 
 Also planned: reference images, symmetry and array tools, stamps / prefabs, palette tools, `.nbt` and possibly `.litematic` support.
 

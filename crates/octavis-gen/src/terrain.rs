@@ -3,7 +3,7 @@
 //! deeper fill are made of.
 
 use glam::IVec3;
-use octavis_core::{BlockId, Pattern, World};
+use octavis_core::{BlockId, Grid, Pattern};
 
 use crate::noise::Perlin2;
 
@@ -59,7 +59,7 @@ impl Terrain {
     /// matches the same area generated unmasked).
     pub fn plan(
         &self,
-        world: &World,
+        world: &Grid,
         min: IVec3,
         max: IVec3,
         include: &dyn Fn(IVec3) -> bool,
@@ -72,7 +72,7 @@ impl Terrain {
     /// it is far cheaper and good enough for a live preview.
     pub fn plan_detail(
         &self,
-        world: &World,
+        world: &Grid,
         min: IVec3,
         max: IVec3,
         include: &dyn Fn(IVec3) -> bool,
@@ -132,7 +132,7 @@ pub enum Detail {
 /// skipping 16-block runs whose section is missing or entirely air.
 #[allow(clippy::too_many_arguments)]
 fn clear_above(
-    world: &World,
+    world: &Grid,
     x: i32,
     z: i32,
     from_y: i32,
@@ -163,7 +163,7 @@ fn clear_above(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use octavis_core::BlockState;
+    use octavis_core::{BlockState, World};
 
     fn terrain(world: &mut World) -> Terrain {
         let mut id = |n: &str| world.blocks.intern(BlockState::new(format!("minecraft:{n}")));

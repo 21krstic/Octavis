@@ -21,14 +21,14 @@ Later: mlua (Lua generators/brushes), egui node-graph crate (generator graphs).
 - **Rule:** the core engine depends on nothing else (no rendering, UI, or MC version). Format-specific code lives only in I/O. (MCEdit died from format coupling at 1.13.)
 - Grid: **growable on all 3 axes**, chunked into 16^3 sections, palette-compressed with bit-packed indices (mirrors MC's format so round-trips are lossless). Add a size cap only if needed.
 - Cell = namespaced block state (`minecraft:oak_stairs[facing=north]`) + optional block-entity NBT.
-- Layers: sparse containers, topmost non-air wins; visibility/lock/solo/merge-down.
+- Layers (`octavis-core/layers.rs`): each layer owns a sparse `Grid`; topmost shown non-air wins. The editor keeps a derived *composite* `World` (what tools, meshing, picking and export read) updated per write by `LayerStack::write`, and rebuilt on structural changes. `World` = block table + `Grid` (derefs to it); layers share the one table.
 - Undo: command pattern, one sparse diff per action/stroke.
 - **Block registry** (version-independent: properties, shapes, connectivity rules) is a core dependency, not an I/O detail. Needed by fix-connect and type replacer.
 - Not an octree (target format is MC's chunk+palette) and not BMesh-based; borrow Blender's UX only.
 
 ## Open design decisions (settle before building the relevant milestone)
 
-- **Layers vs. generators (before layers):** non-destructive means a generator layer stores its *recipe* (generator + parameters + seed) plus a cached result, not just cells. Tweak a parameter and it re-runs into that layer without touching layers below. Plain painted layers store only cells. Decide the layer data model to support both from the start.
+- **Layers vs. generators: decided.** A layer is `Painted` (tools edit it) or `Generator` (cells are the cached result; read-only to tools; the recipe lives in `OctavisApp::recipes` keyed by `LayerId`, with no payload in core). Regenerating replaces exactly that layer's cells (`replace_cells`), so layers below are untouched. Baking turns a generator layer into a painted one.
 - **Undo memory (before generators/large ops):** storing old+new values per changed cell is fine for strokes, but a generator over a huge region could create a gigantic undo entry. Plan: cap total undo memory; when exceeded, spill older entries to disk or drop the oldest. Generator layers can undo by re-running, so they need no cell diff.
 - **Rendering:** greedy meshing conflicts with per-face AO/lighting and varied textures. Prefer culled meshing + AO; greedy only for uniform flat regions.
 
@@ -63,7 +63,7 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 
 ## Status
 
-Milestones 1-4 done (QA-accepted; remaining items are in the backlog below). MVP reached; public README lives at the repo root (keep it in sync with features).
+Milestones 1-5 done (QA-accepted; remaining items are in the backlog below). MVP reached; public README lives at the repo root (keep it in sync with features).
 
 1. Core grid, mesher, rendering, orbit camera (zoom-scaled orbit/pan speed).
 2. Pencil (Free stroke mode default; Plane-locked kept as an option), select box / sphere / wand (wand ignores air, optional diagonals), undoable selection changes, axis gizmo + origin axes, selection caps (500k cells; sphere radius 49; wand 200k).
@@ -84,6 +84,9 @@ Milestones 1-4 done (QA-accepted; remaining items are in the backlog below). MVP
    - **Live preview** (`TerrainPreview`, Enter applies, Esc cancels; low-quality shell mode on by default via `Detail::Shell`: only the exposed skin is written, ~14x fewer changes; Apply always generates the full terrain): writes the terrain into the world untracked (`Editor::apply_untracked`) keeping a backup, recomputes (throttled to ~150 ms) when settings change, and Apply commits it as one undo step (`commit_applied`) / Cancel restores. Editing tools, undo, file actions are locked or cancel it while active.
    - Preview idea parked: a non-voxel overlay mesh (heightfield) would be instant and need no tool locking, but must hide the old world beneath it and needs a new render path. Revisit with layers, where a generator layer needs its own non-destructive preview anyway.
    - Not yet: non-destructive regeneration (waits for layers: a generator layer will store these params + seed), 3D density / caves, biomes, water, trees, edge blending with existing terrain.
+
+6. Built, in QA: layers (`app/layers.rs`, core `layers.rs`): add / delete / reorder / merge down, visibility, lock, solo, rename; tools edit the active layer; import creates a layer; terrain lives in generator layers (panel edits the active generator layer's recipe; "New terrain layer" creates one). Undoable: cell edits, add, delete, move, merge (structure commands in history hold removed layers by move, no copies). Not undoable (view state): visibility, solo, lock, rename, active layer, bake. Export uses the composite, so hidden layers are not exported.
+   - Known: composite duplicates cell memory (layers + composite); visibility toggles rebuild the whole composite; "Delete blocks" / fill only touch the active layer; no per-layer opacity or blend modes; recipes are not saved anywhere yet (no project file).
 
 Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 

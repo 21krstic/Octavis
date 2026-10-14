@@ -17,6 +17,7 @@ use crate::{gizmo, scene};
 
 mod files;
 mod generate;
+mod layers;
 
 const MAX_PICK_DISTANCE: f32 = 1000.0;
 /// Stops a wand click on a huge connected mass from running away.
@@ -163,6 +164,10 @@ pub struct OctavisApp {
     block_filter: String,
     terrain: generate::TerrainSettings,
     terrain_preview: Option<generate::TerrainPreview>,
+    /// Settings of each generator layer.
+    recipes: generate::Recipes,
+    /// Active layer last frame, to load its recipe when it changes.
+    last_active: octavis_core::LayerId,
     /// Viewport-relative cursor position at the end of the last stroke
     /// frame; the next frame's path starts here.
     last_cursor: Option<Vec2>,
@@ -181,7 +186,7 @@ impl OctavisApp {
         let world = scene::demo_world();
         let block = world.blocks.len().checked_sub(2).map_or(BlockId(1), |i| BlockId(i as u32));
         Self {
-            editor: Editor::new(world),
+            editor: Editor::new(world, "Ground"),
             camera: Camera::new(Vec3::new(0.0, 4.0, 0.0)),
             tool: Tool::Pencil,
             stroke_mode: StrokeMode::Free,
@@ -200,6 +205,8 @@ impl OctavisApp {
             block_filter: String::new(),
             terrain: generate::TerrainSettings::new(),
             terrain_preview: None,
+            recipes: Default::default(),
+            last_active: octavis_core::LayerId(0),
             last_cursor: None,
             file_msg: None,
             stroke_seed: 0,
@@ -316,7 +323,7 @@ impl OctavisApp {
             .add_enabled(has_selection, egui::Button::new("Apply to selection"))
             .on_hover_text("Runs this mode, mask and pattern over every selected block (one undo step)")
             .clicked();
-        if apply {
+        if apply && self.edit_allowed() {
             match self.build_brush(false) {
                 Ok(brush) => {
                     self.editor.apply_brush_to_selection(&brush);
@@ -396,7 +403,11 @@ impl OctavisApp {
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         let unlocked = !self.locked();
-        ui.add_enabled_ui(unlocked, |ui| self.edit_tools_panel(ui));
+        ui.add_enabled_ui(unlocked, |ui| {
+            egui::CollapsingHeader::new("Layers").default_open(true).show(ui, |ui| self.layers_panel(ui));
+            ui.separator();
+            self.edit_tools_panel(ui);
+        });
         ui.separator();
         egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
             self.terrain_panel(ui);
@@ -475,10 +486,10 @@ impl OctavisApp {
         ui.heading("Selection");
         let has_sel = !self.editor.selection.is_empty();
         ui.add_enabled_ui(has_sel, |ui| {
-            if ui.button("Fill with block").clicked() {
+            if ui.button("Fill with block").clicked() && self.edit_allowed() {
                 self.editor.fill_selection(self.block);
             }
-            if ui.button("Delete blocks").clicked() {
+            if ui.button("Delete blocks").clicked() && self.edit_allowed() {
                 self.editor.fill_selection(BlockId::AIR);
             }
             if ui.button("Deselect (Esc)").clicked() {
@@ -494,6 +505,10 @@ impl OctavisApp {
                 None => ui.label("Cell: -"),
             };
             ui.separator();
+            if let Some(layer) = self.editor.layers.layer(self.editor.layers.active()) {
+                ui.label(format!("Layer: {}", layer.name));
+                ui.separator();
+            }
             let sel = &self.editor.selection;
             match sel.bounds() {
                 Some((lo, hi)) => {
@@ -689,7 +704,25 @@ impl OctavisApp {
         }
     }
 
+    /// True if the active layer can be edited; otherwise says why in the
+    /// status bar.
+    fn edit_allowed(&mut self) -> bool {
+        match self.editor.edit_blocked() {
+            Some(why) => {
+                self.file_msg = Some(Err(why.into()));
+                false
+            }
+            None => true,
+        }
+    }
+
     fn begin_press(&mut self, hit: &RayHit, ctrl: bool, shift: bool) {
+        if matches!(self.tool, Tool::Pencil | Tool::Brush) {
+            if let Some(why) = self.editor.edit_blocked() {
+                self.notice = Some(why);
+                return;
+            }
+        }
         match self.tool {
             Tool::Pencil => {
                 let Some(target) = self.hover_cell(hit, ctrl) else { return };
@@ -786,6 +819,7 @@ impl eframe::App for OctavisApp {
         self.handle_shortcuts(ui.ctx());
         self.terrain_preview_shortcut(ui.ctx());
 
+        self.sync_recipe();
         self.update_terrain_preview(ui.ctx());
         let mut action = None;
         egui::Panel::top("menu").show(ui, |ui| action = self.menu_bar(ui));

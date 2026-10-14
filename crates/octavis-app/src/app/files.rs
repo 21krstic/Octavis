@@ -112,7 +112,8 @@ impl OctavisApp {
         if !self.confirm_discard("A new scene") {
             return None;
         }
-        self.editor.replace_world(scene::demo_world());
+        self.editor.replace_world(scene::demo_world(), "Ground");
+        self.recipes.clear();
         self.sent_hover.clear();
         self.after_blocks_changed();
         Some(Ok("New scene".into()))
@@ -132,7 +133,8 @@ impl OctavisApp {
             world.set(p, b);
         }
         world.compact();
-        self.editor.replace_world(world);
+        self.editor.replace_world(world, name.trim_end_matches(".schem"));
+        self.recipes.clear();
         self.sent_hover.clear();
         // Frame the whole build.
         self.camera.target = s.size.as_vec3() * 0.5;
@@ -148,9 +150,9 @@ impl OctavisApp {
         )))
     }
 
-    /// Pastes a schematic into the scene, centred on the camera target and
-    /// standing on the highest block of that column. Air in the file leaves
-    /// existing blocks alone. The result is selected and one undo step.
+    /// Imports a schematic as a new layer, centred on the camera target and
+    /// standing on the highest visible block of that column. Being its own
+    /// layer, it never overwrites anything. The result is selected; one undo step.
     fn import_schem(&mut self) -> Outcome {
         let (name, s) = match self.pick_and_read()? {
             Ok(v) => v,
@@ -165,7 +167,7 @@ impl OctavisApp {
         let origin = IVec3::new(x, ground, z);
 
         let cells = s.place(&mut self.editor.world.blocks, origin);
-        self.editor.paste(&cells);
+        self.editor.add_layer_with(name.trim_end_matches(".schem"), octavis_core::LayerKind::Painted, &cells);
         if cells.len() as i64 <= MAX_SELECTION_CELLS {
             let sel = Selection::from_cells(cells.iter().map(|c| c.0));
             self.editor.apply_selection(crate::editor::SelectMode::Replace, &sel);
