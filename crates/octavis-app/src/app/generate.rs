@@ -492,7 +492,7 @@ impl OctavisApp {
 /// cells): stale cells become air, differing cells are rewritten, matching
 /// cells are left alone.
 fn replace_cells(current: &Grid, fresh: Vec<(IVec3, BlockId)>) -> Vec<(IVec3, BlockId)> {
-    let wanted: std::collections::HashSet<IVec3> = fresh.iter().map(|c| c.0).collect();
+    let wanted: octavis_core::CellSet<IVec3> = fresh.iter().map(|c| c.0).collect();
     let mut plan: Vec<(IVec3, BlockId)> = current
         .solid_cells()
         .into_iter()

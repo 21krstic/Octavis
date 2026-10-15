@@ -36,8 +36,8 @@ fn warnings_suffix(s: &Schematic) -> String {
 impl OctavisApp {
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) -> Option<FileAction> {
         let mut action = None;
-        // Files can't be replaced or exported mid terrain change.
-        let pending = self.terrain_preview.is_some();
+        // Files can't be replaced or exported mid terrain / transform change.
+        let pending = self.pending();
         egui::MenuBar::new().ui(ui, |ui| {
             ui.add_enabled_ui(!pending, |ui| ui.menu_button("File", |ui| {
                 for (a, label) in [

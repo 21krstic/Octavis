@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 use glam::IVec3;
 
 use crate::block::{BlockId, BlockTable};
+use crate::hash::CellMap;
 use crate::section::{SECTION_SIZE, Section};
 
 const S: i32 = SECTION_SIZE as i32;
@@ -17,7 +17,7 @@ const S: i32 = SECTION_SIZE as i32;
 /// table.
 #[derive(Clone, Debug, Default)]
 pub struct Grid {
-    sections: HashMap<IVec3, Section>,
+    sections: CellMap<IVec3, Section>,
 }
 
 impl Grid {

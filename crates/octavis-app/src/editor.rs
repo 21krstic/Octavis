@@ -1,10 +1,8 @@
 //! Editing state and operations, independent of egui so it can be tested.
 
-use std::collections::HashSet;
-
 use glam::IVec3;
 use octavis_core::{
-    BlockId, Brush, History, LayerCmd, LayerId, LayerKind, LayerStack, SECTION_SIZE,
+    BlockId, Brush, CellSet, History, LayerCmd, LayerId, LayerKind, LayerStack, SECTION_SIZE,
     Selection, World,
 };
 
@@ -37,7 +35,7 @@ pub struct Editor {
     pub history: History,
     pub selection: Selection,
     /// Sections whose mesh must be rebuilt before the next draw.
-    dirty: HashSet<IVec3>,
+    dirty: CellSet<IVec3>,
     selection_dirty: bool,
 }
 
@@ -169,6 +167,24 @@ impl Editor {
             self.write(layer, p, b);
         }
         Backup { layer, cells: old }
+    }
+
+    /// Writes cells into a layer and, if given, replaces the selection, as
+    /// one undo step. No permission check (callers check before starting).
+    pub fn commit_cells(&mut self, layer: LayerId, cells: &[(IVec3, BlockId)], selection: Option<Selection>) {
+        self.in_edit(|ed| {
+            for &(p, b) in cells {
+                ed.write(layer, p, b);
+            }
+            if let Some(sel) = selection {
+                let delta = ed.selection.delta_to(&sel);
+                if !delta.is_empty() {
+                    ed.selection = sel;
+                    ed.history.push_selection(delta);
+                    ed.selection_dirty = true;
+                }
+            }
+        });
     }
 
     /// Undoes [`Editor::apply_untracked`].
@@ -363,7 +379,7 @@ impl Editor {
     /// Swaps in a whole new world as a single layer, discarding history and
     /// selection, and schedules a remesh of every old and new section.
     pub fn replace_world(&mut self, world: World, layer_name: &str) {
-        let mut dirty: HashSet<IVec3> = self.world.sections().map(|(p, _)| p).collect();
+        let mut dirty: CellSet<IVec3> = self.world.sections().map(|(p, _)| p).collect();
         dirty.extend(world.sections().map(|(p, _)| p));
         self.layers = LayerStack::single(layer_name, (*world).clone());
         self.world = world;
@@ -516,6 +532,22 @@ mod tests {
         e.restore(backup);
         assert_eq!(e.world.get(IVec3::ZERO), stone);
         assert_eq!(e.world.get(IVec3::new(2, 0, 0)), BlockId::AIR);
+    }
+
+    #[test]
+    fn committed_cells_and_selection_undo_together() {
+        let (mut e, stone) = editor();
+        let layer = e.layers.active();
+        e.set_block(IVec3::ZERO, stone);
+        e.selection = Selection::from_cells([IVec3::ZERO]);
+        let moved = Selection::from_cells([IVec3::X]);
+        e.commit_cells(layer, &[(IVec3::ZERO, BlockId::AIR), (IVec3::X, stone)], Some(moved.clone()));
+        assert_eq!((e.world.get(IVec3::X), &e.selection), (stone, &moved));
+        e.undo();
+        assert_eq!((e.world.get(IVec3::ZERO), e.world.get(IVec3::X)), (stone, BlockId::AIR));
+        assert!(e.selection.contains(IVec3::ZERO) && !e.selection.contains(IVec3::X));
+        e.redo();
+        assert_eq!((e.world.get(IVec3::X), &e.selection), (stone, &moved));
     }
 
     #[test]

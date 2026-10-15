@@ -16,6 +16,7 @@ Octavis is not affiliated with Mojang or Microsoft and ships no Minecraft assets
   - **Patterns** decide what gets written: `70%stone, 30%dirt`.
   - A whole stroke is one undo step.
 - **Terrain generator:** seeded fractal-noise heightmaps with configurable scale, roughness, height and block layers (grass / soil / stone, or any patterns), a live preview, and generation into a manual area or the exact cells of a selection. Same seed, same terrain on every machine.
+- **Transforms:** move, rotate, scale and flip the selected blocks or a whole layer, with a live preview, an arrow gizmo, exact 90° turns and resampled free angles and scales. Stairs, logs, doors, fences and other oriented blocks turn with the build. Apply or cancel; one undo step.
 - **Layers:** stack, reorder, hide, lock, solo and merge layers. Imported schematics and generated terrain get their own layers, so they never overwrite your work. Generator layers can be tweaked and regenerated at any time without touching the layers below.
 - **Fill / delete** a selection, and **apply a brush to a selection**.
 - **Undo / redo** for everything.
@@ -25,17 +26,20 @@ Known limits: block entities (chest contents, signs) and entities are not suppor
 
 ## Controls
 
-| Input                              | Action                                                     |
-| ---------------------------------- | ---------------------------------------------------------- |
-| Left mouse                         | Use the active tool                                        |
-| Right-drag                         | Orbit                                                      |
-| Middle-drag, or Shift + right-drag | Pan                                                        |
-| Mouse wheel                        | Zoom                                                       |
-| Ctrl + left                        | Break blocks (pencil), erase (brush), subtract (selection) |
-| Shift + left                       | Add to selection                                           |
-| Ctrl+Z / Ctrl+Y                    | Undo / redo                                                |
-| Esc                                | Deselect, or cancel a pending terrain change               |
-| Enter                              | Apply a pending terrain change                             |
+| Input                              | Action                                                               |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| Left mouse                         | Use the active tool (while transforming: drag to move)               |
+| Right-drag                         | Orbit                                                                |
+| Middle-drag, or Shift + right-drag | Pan                                                                  |
+| Mouse wheel                        | Zoom                                                                 |
+| Ctrl + left                        | Break blocks (pencil), erase (brush), subtract (selection)           |
+| Shift + left                       | Add to selection                                                     |
+| Ctrl+Z / Ctrl+Y                    | Undo / redo                                                          |
+| G                                  | Transform the selection (or the active layer if nothing is selected) |
+| Arrow keys, PgUp / PgDn            | Nudge a transform one block                                          |
+| R / Shift+R                        | Turn a transform 90° about the vertical axis                         |
+| Enter                              | Apply a pending transform or terrain change                          |
+| Esc                                | Deselect, or cancel a pending transform or terrain change            |
 
 ## Building
 

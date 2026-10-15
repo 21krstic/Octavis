@@ -1,8 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use glam::IVec3;
 
 use crate::block::BlockId;
+use crate::hash::CellSet;
 use crate::world::World;
 
 /// Which neighbours the wand follows.
@@ -43,7 +44,7 @@ impl SelectionDelta {
 /// it works for any shape; fine at schematic scale.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Selection {
-    cells: HashSet<IVec3>,
+    cells: CellSet<IVec3>,
 }
 
 impl Selection {
@@ -58,7 +59,7 @@ impl Selection {
     /// Inclusive box between two corners, in any order.
     pub fn cuboid(a: IVec3, b: IVec3) -> Self {
         let (lo, hi) = (a.min(b), a.max(b));
-        let mut cells = HashSet::with_capacity(((hi - lo + IVec3::ONE).element_product()) as usize);
+        let mut cells = CellSet::with_capacity_and_hasher(((hi - lo + IVec3::ONE).element_product()) as usize, Default::default());
         for x in lo.x..=hi.x {
             for y in lo.y..=hi.y {
                 for z in lo.z..=hi.z {
@@ -72,7 +73,7 @@ impl Selection {
     /// Cells whose centre lies within `radius` of the centre cell.
     pub fn sphere(center: IVec3, radius: f32) -> Self {
         let r = radius.ceil() as i32;
-        let mut cells = HashSet::new();
+        let mut cells = CellSet::default();
         for x in -r..=r {
             for y in -r..=r {
                 for z in -r..=r {
@@ -94,7 +95,7 @@ impl Selection {
         if target == BlockId::AIR {
             return Self::new();
         }
-        let mut cells = HashSet::new();
+        let mut cells = CellSet::default();
         let mut queue = VecDeque::from([start]);
         cells.insert(start);
         'fill: while let Some(p) = queue.pop_front() {

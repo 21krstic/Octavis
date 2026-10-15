@@ -18,6 +18,7 @@ use crate::{gizmo, scene};
 mod files;
 mod generate;
 mod layers;
+mod transform;
 
 const MAX_PICK_DISTANCE: f32 = 1000.0;
 /// Stops a wand click on a huge connected mass from running away.
@@ -164,6 +165,8 @@ pub struct OctavisApp {
     block_filter: String,
     terrain: generate::TerrainSettings,
     terrain_preview: Option<generate::TerrainPreview>,
+    /// A pending move / rotate / scale / flip (see `transform.rs`).
+    transform: Option<transform::TransformSession>,
     /// Recipe text the terrain panel was last in step with; a different
     /// recipe on the active generator layer (new layer, undo) reloads the panel.
     synced_recipe: String,
@@ -210,6 +213,7 @@ impl OctavisApp {
             block_filter: String::new(),
             terrain,
             terrain_preview: None,
+            transform: None,
             synced_recipe: String::new(),
             terrain_text,
             fast_preview: true,
@@ -376,6 +380,12 @@ impl OctavisApp {
         }
     }
 
+    /// A terrain or transform change waits for Apply / Cancel; tools,
+    /// layers, history and files are locked meanwhile.
+    fn pending(&self) -> bool {
+        self.terrain_preview.is_some() || self.transform.is_some()
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let (undo, redo, deselect) = ctx.input(|i| {
             let cmd = i.modifiers.command;
@@ -389,12 +399,13 @@ impl OctavisApp {
         if self.drag.is_some() {
             return;
         }
-        // A pending terrain change: Ctrl+Z discards it; Enter / Esc are
-        // handled by `terrain_preview_shortcut`, and nothing else edits.
+        // A pending terrain or transform change: Ctrl+Z discards it; Enter
+        // / Esc are handled by their own shortcuts, and nothing else edits.
         // (Redo is ignored; the change is not in history yet.)
-        if self.terrain_preview.is_some() {
+        if self.pending() {
             if undo {
                 self.cancel_terrain_preview();
+                self.cancel_transform();
             }
             return;
         }
@@ -410,17 +421,23 @@ impl OctavisApp {
     }
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
-        // A pending terrain change locks layers, tools and history until it
-        // is applied or cancelled.
-        let pending = self.terrain_preview.is_some();
+        // A pending terrain or transform change locks layers, tools and
+        // history until it is applied or cancelled.
+        let pending = self.pending();
         ui.add_enabled_ui(!pending, |ui| {
             egui::CollapsingHeader::new("Layers").default_open(true).show(ui, |ui| self.layers_panel(ui));
             ui.separator();
             self.edit_tools_panel(ui);
         });
         ui.separator();
-        egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
-            self.terrain_panel(ui);
+        ui.add_enabled_ui(self.terrain_preview.is_none(), |ui| {
+            egui::CollapsingHeader::new("Transform").default_open(true).show(ui, |ui| self.transform_panel(ui));
+        });
+        ui.separator();
+        ui.add_enabled_ui(self.transform.is_none(), |ui| {
+            egui::CollapsingHeader::new("Terrain generator").default_open(false).show(ui, |ui| {
+                self.terrain_panel(ui);
+            });
         });
         ui.separator();
         ui.horizontal(|ui| {
@@ -575,6 +592,11 @@ impl OctavisApp {
             let rel = p - rect.min;
             Some(self.camera.ray(Vec2::new(rel.x, rel.y), Vec2::new(rect.width(), rect.height())))
         });
+        if self.transform.is_some() {
+            self.notice = None;
+            self.transform_viewport(ui, rect, ray, response.hovered());
+            return (rect, None);
+        }
         let hit = ray.and_then(|(o, d)| raycast(&self.editor.world, o, d, MAX_PICK_DISTANCE));
         let target = self.target_at(ray, ctrl);
 
@@ -825,11 +847,13 @@ impl eframe::App for OctavisApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ui.ctx());
         self.terrain_preview_shortcut(ui.ctx());
+        self.transform_shortcuts(ui.ctx());
         self.update_terrain(ui.ctx());
+        self.update_transform(ui.ctx());
         let mut action = None;
         egui::Panel::top("menu").show(ui, |ui| action = self.menu_bar(ui));
         if let Some(a) = action {
-            if self.drag.is_none() && self.terrain_preview.is_none() {
+            if self.drag.is_none() && !self.pending() {
                 self.run_file_action(a);
             }
         }
@@ -848,7 +872,9 @@ impl eframe::App for OctavisApp {
 
             let mut overlay_uploads = Vec::new();
             if self.editor.take_selection_dirty() | std::mem::take(&mut self.overlay_dirty) {
-                let sel: Vec<IVec3> = self.editor.selection.iter().collect();
+                // While transforming, the selection is drawn where it will end up.
+                let shown = self.transform.as_ref().and_then(|t| t.shown_selection());
+                let sel: Vec<IVec3> = shown.unwrap_or(&self.editor.selection).iter().collect();
                 let prev: Vec<IVec3> =
                     self.preview.as_ref().map(|p| p.iter().collect()).unwrap_or_default();
                 overlay_uploads.push((
@@ -884,10 +910,13 @@ impl eframe::App for OctavisApp {
                 },
             ));
 
+            let painter = ui.painter_at(rect);
             if self.show_axes {
-                let painter = ui.painter_at(rect);
                 gizmo::draw_world_axes(&painter, rect, &view_proj);
                 gizmo::draw_corner_gizmo(&painter, rect, &self.camera.view());
+            }
+            if let Some((origin, length, active)) = self.transform_gizmo() {
+                gizmo::draw_move_gizmo(&painter, rect, &view_proj, origin, length, active);
             }
         });
     }

@@ -6,9 +6,7 @@
 
 use glam::IVec3;
 
-use std::collections::HashMap;
-
-use crate::{BlockId, BlockState, BlockTable, Selection, World};
+use crate::{BlockId, BlockState, BlockTable, CellMap, Selection, World};
 
 const FACE_DIRS: [IVec3; 6] =
     [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
@@ -604,7 +602,7 @@ impl Brush {
         let mut grid = Grid::new(world, &masked);
         // Without the dense copy a pass cannot see its predecessor's result.
         let passes = if grid.dense() { iterations.max(1) } else { 1 };
-        let mut result: HashMap<IVec3, BlockId> = HashMap::new();
+        let mut result: CellMap<IVec3, BlockId> = CellMap::default();
         for _ in 0..passes {
             let changes: Vec<(IVec3, BlockId)> =
                 masked.iter().filter_map(|&p| self.step(&grid, p).map(|b| (p, b))).collect();

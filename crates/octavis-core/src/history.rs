@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-
 use glam::IVec3;
 
 use crate::block::BlockId;
+use crate::hash::CellMap;
 use crate::layers::{Layer, LayerId, LayerKind, LayerStack};
 use crate::selection::{Selection, SelectionDelta};
 use crate::world::World;
@@ -103,7 +102,7 @@ impl LayerCmd {
 #[derive(Debug, Default)]
 struct Edit {
     changes: Vec<Change>,
-    index: HashMap<(LayerId, IVec3), usize>,
+    index: CellMap<(LayerId, IVec3), usize>,
     /// Structural layer changes, in the order they happened.
     cmds: Vec<LayerCmd>,
     /// Set for selection-only edits (like paint.net, selecting is undoable).
@@ -221,6 +220,17 @@ impl History {
         if !edit.is_noop() {
             self.undo.push(edit);
             self.redo.clear();
+        }
+    }
+
+    /// Adds an already-applied selection change to the open edit, so cells
+    /// and selection undo together. Does nothing if no edit is open.
+    pub fn push_selection(&mut self, delta: SelectionDelta) {
+        if let Some(edit) = &mut self.open {
+            debug_assert!(edit.selection.is_none(), "one selection change per edit");
+            if !delta.is_empty() {
+                edit.selection = Some(delta);
+            }
         }
     }
 

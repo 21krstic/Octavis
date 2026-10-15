@@ -55,6 +55,46 @@ pub fn draw_world_axes(painter: &Painter, rect: Rect, view_proj: &Mat4) {
     }
 }
 
+/// Screen position of a world point, or `None` if it is behind the camera.
+pub fn project(rect: Rect, view_proj: &Mat4, p: Vec3) -> Option<Pos2> {
+    let c = *view_proj * p.extend(1.0);
+    (c.w > 1e-6 && c.z >= 0.0).then(|| to_screen(rect, c))
+}
+
+fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+/// Arrows for moving a transform: one per axis from `origin`, `length`
+/// world units long. The arrow `active` (hovered or dragged) is highlighted.
+pub fn draw_move_gizmo(painter: &Painter, rect: Rect, view_proj: &Mat4, origin: Vec3, length: f32, active: Option<usize>) {
+    let Some(o) = project(rect, view_proj, origin) else { return };
+    for (i, (dir, color, label)) in AXES.into_iter().enumerate() {
+        let Some(tip) = project(rect, view_proj, origin + dir * length) else { continue };
+        let (width, color) =
+            if active == Some(i) { (5.0, Color32::from_rgb(255, 220, 80)) } else { (3.0, color) };
+        painter.line_segment([o, tip], Stroke::new(width, color));
+        painter.circle_filled(tip, 8.0, color);
+        painter.text(tip, Align2::CENTER_CENTER, label, FontId::proportional(11.0), Color32::BLACK);
+    }
+    painter.circle_filled(o, 4.0, Color32::WHITE);
+}
+
+/// The move-gizmo arrow under `cursor`, if one is within a few pixels.
+pub fn pick_move_gizmo(rect: Rect, view_proj: &Mat4, origin: Vec3, length: f32, cursor: Pos2) -> Option<usize> {
+    let o = project(rect, view_proj, origin)?;
+    (0..3)
+        .filter_map(|i| {
+            let tip = project(rect, view_proj, origin + AXES[i].0 * length)?;
+            Some((i, segment_distance(cursor, o, tip)))
+        })
+        .filter(|&(_, d)| d <= 9.0)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+}
+
 /// Small orientation widget in the viewport's bottom-left corner.
 pub fn draw_corner_gizmo(painter: &Painter, rect: Rect, view: &Mat4) {
     let center = Pos2::new(rect.min.x + 70.0, rect.max.y - 70.0);

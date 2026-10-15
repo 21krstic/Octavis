@@ -10,11 +10,9 @@
 //! are the cached result of a recipe kept by the app; tools cannot edit it,
 //! so regenerating never destroys hand work).
 
-use std::collections::HashSet;
-
 use glam::IVec3;
 
-use crate::{BlockId, Grid, World};
+use crate::{BlockId, CellSet, Grid, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LayerId(pub u32);
@@ -270,7 +268,7 @@ impl LayerStack {
     /// Recomputes the whole composite. Returns the section positions that
     /// may have changed (old and new), for remeshing.
     pub fn rebuild(&self, world: &mut World) -> Vec<IVec3> {
-        let mut touched: HashSet<IVec3> = world.sections().map(|(p, _)| p).collect();
+        let mut touched: CellSet<IVec3> = world.sections().map(|(p, _)| p).collect();
         world.clear();
         for layer in &self.layers {
             if self.shown(layer) {

@@ -59,11 +59,11 @@ reference images/ghost overlay, symmetry + array tools (live preview), stamps/pr
 - Vulkan crashes at startup on the dev machine; the app defaults to DX12 on Windows (`WGPU_BACKEND` overrides).
 - Run: `cargo run --release`; test: `cargo test --workspace` (both from PowerShell, repo root).
 - First full build is slow (~13 min, deps compile at opt-level 3); incremental is seconds.
-- Palette in the shader is a 2048-entry placeholder (ids 0-2039 real, 2040-2047 overlays; ids past that show magenta), replaced by texture packs at milestone 7.
+- Palette in the shader is a 2048-entry placeholder (ids 0-2039 real, 2040-2047 overlays; ids past that show magenta), replaced by texture packs at milestone 8.
 
 ## Status
 
-Milestones 1-5 done (QA-accepted; remaining items are in the backlog below). MVP reached; public README lives at the repo root (keep it in sync with features).
+Milestones 1-5 done (QA-accepted; remaining items are in the backlog below); 6 and 7 built, in QA. MVP reached; public README lives at the repo root (keep it in sync with features).
 
 1. Core grid, mesher, rendering, orbit camera (zoom-scaled orbit/pan speed).
 2. Pencil (Free stroke mode default; Plane-locked kept as an option), select box / sphere / wand (wand ignores air, optional diagonals), undoable selection changes, axis gizmo + origin axes, selection caps (500k cells; sphere radius 49; wand 200k).
@@ -79,33 +79,40 @@ Milestones 1-5 done (QA-accepted; remaining items are in the backlog below). MVP
    - New scene / Open (replaces scene, frames camera, asks before discarding edits) / Import (pastes at camera target on the highest block there, selects it, one undo step; schematic air does not overwrite) / Export (selection if any, else all non-air blocks).
    - Not supported yet because core has no storage for them: block entities (chest contents, signs) and entities. They are dropped on import with a status-bar warning; export writes none. Schematic `Offset` is ignored.
    - Verified against real files from external sites. Limit: bounding box of 64M cells (`MAX_CELLS`); bigger files give a clear error. Supporting them would need streaming the block data straight into the world (the reader currently holds the NBT, an index array and a placement list).
-   - Not done: `.nbt` (structure block), `.litematic`, move/transform of pasted selections.
+   - Not done: `.nbt` (structure block), `.litematic`.
 
 5. Built, in QA: noise terrain generator (`octavis-gen`: `Perlin2` + fBm, `Terrain::plan`; panel in `app/generate.rs`). Heightfield from fractal noise; three patterns for surface / soil / deep layers. Area is either a manual square (centre X/Z, size, depth; independent of the camera, with a "centre on camera target" button) or the selection (its bounds, and only its selected cells, so non-box selections work). One undo step, deterministic per seed, cap 4M cells per run.
    - **Edit to preview, Apply to commit.** With a generator layer active, changing any setting (or a block-name box) starts a live preview (`TerrainPreview`; `Detail::Shell` skin-only by default, "Fast preview" checkbox), refreshed at most every 150 ms. It stays pending (no timer, no click-away commit) until Apply / Enter, which generates the full terrain and commits it as one undo step together with the recipe (`Editor::regenerate_layer`), or Cancel / Esc / Ctrl+Z, which restores the old cells and settings. While pending, layers, tools, undo/redo buttons, the File menu and viewport presses are locked (camera still works). Block-name boxes edit buffers (`terrain_text`) and reach the settings only when every name already exists or on Enter / focus loss, so typing never creates junk block types. Recipe text format: `terrain v1` + `key=value` lines (`TerrainSettings::to_text/from_text`); the panel reloads when the active layer's recipe differs from `synced_recipe` (layer switch, undo, redo).
    - Preview idea parked: a non-voxel overlay mesh (heightfield) would be instant, but must hide the old world beneath it and needs a new render path. Revisit later.
-   - Not yet: non-destructive regeneration (waits for layers: a generator layer will store these params + seed), 3D density / caves, biomes, water, trees, edge blending with existing terrain.
+   - Not yet: 3D density / caves, biomes, water, trees, edge blending with existing terrain.
 
 6. Built, in QA: layers (`app/layers.rs`, core `layers.rs`): add / delete / reorder / merge down, visibility, lock, solo, rename; tools edit the active layer; import creates a layer; terrain lives in generator layers (the panel edits the active generator layer's recipe live; "New terrain layer" creates one). Undoable: cell edits, add, delete, move, merge (structure commands in history hold removed layers by move, no copies). Baking (kind + recipe) is undoable. Not undoable (view state): visibility, solo, lock, rename, active layer. Export uses the composite, so hidden layers are not exported.
    - Known: composite duplicates cell memory (layers + composite); visibility toggles and undo of layer operations recompute only the affected layers' cells (small layer: ~0.2 ms; a 480x480x3 layer: ~280 ms); "Delete blocks" / fill only touch the active layer; no per-layer opacity or blend modes; recipes are not saved anywhere yet (no project file).
+
+7. Built, in QA: transforms (`app/transform.rs`; core `transform.rs` + `orient.rs`). Source is the selected blocks of the active layer ("Transform selection", or G) or the whole active layer ("Transform layer"; G with nothing selected). A pending session works like the terrain preview: the result is written untracked into the layer, layers / tools / history / files are locked, Apply or Enter commits cells + moved selection as one undo step (`Editor::commit_cells`), Cancel / Esc / Ctrl+Z restores.
+   - `Transform { offset, rotation (Euler XYZ degrees, right-hand rule), scale, flip }` about the centre of the pivot cell (middle cell of the source bounds). Order: rotate, then scale and flip along world axes, then offset. Quarter turns and flips at unit scale map cells exactly (`AxisMap::exact`); other angles and scales resample nearest-neighbour by inverse mapping over the destination box (cap 16M cells), so no holes.
+   - Block states turn with the nearest quarter-turn map (`orient::transform_state`): facing, axis, sign rotation, fence/wall/pane sides, stair shape and door hinge handedness, top/bottom halves, slab type, button face, rails. Heuristic from property names until the block registry exists; a turn a block cannot take (stairs facing up) leaves the property alone.
+   - Move clears the source blocks; "Keep original" copies. Air in the buffer never overwrites. The selection (air cells included) moves with the blocks; a result over 500k cells is deselected.
+   - UI: numeric move / rotate (+-90 buttons) / scale (uniform or per axis) / flip toggles, Reset. Viewport: arrow gizmo at the pivot (drag an arrow = move along it), drag elsewhere = slide on the horizontal plane; arrow keys (view-relative) and PgUp/PgDn nudge, R / Shift+R turn 90 degrees about Y.
+   - Timing (default 480x480x3 ground layer, 691k blocks): sideways move preview ~45 ms (plan uses a dense array, `merge_writes`); a vertical move rewrites 920k cells, ~0.4 s per refresh.
+   - Not yet: rotate / scale gizmo handles (rings, boxes), editable pivot, a transform of several layers at once, "include air" option, paste from clipboard / stamps.
 
 Default scene: flat 480x480 grass/dirt/stone platform; grey viewport background.
 
 ## Known issues / backlog (from QA)
 
-- **Transform tools (high priority, planned next, see build order):** move / rotate / scale / flip of a selection and of a whole layer. Not built yet.
 - **Change history panel:** list every action in order (undo stack as a viewable, clickable list; jump to any point). History already stores one entry per action; needs labels and a UI.
 - **Project files:** save/load the whole project (layers incl. generator recipes, selection, settings) as `.oct` (extension follows the program name; keep it a single constant, and put a magic string + format version in the header so a rename never breaks old files). Not built yet.
 - **Settings page:** adjustable keybinds, and texture pack selection / adjustment (milestone 8 for the packs themselves). Keybinds are currently hard-coded in `handle_shortcuts` and the viewport; route them through one action table when this is built.
 - **Selection glow:** a glowing / animated effect on the current selection (outline or pulse) so it reads clearly against the scene. Needs a new overlay render path; the selection is currently flat overlay faces.
 - **UI tidy-up (later):** the left panel is crowded; terrain-layer controls differ depending on whether a generator layer is selected.
 
-- **Performance on weak hardware** (dev laptop is weak): radius-16 smooth and other large operations spike the CPU. Ideas: parallelise planning with rayon, mesh dirty sections off the main thread, faster section hashing, incremental overlay meshing.
+- **Performance on weak hardware** (dev laptop is weak): radius-16 smooth and other large operations spike the CPU. Ideas: parallelise planning with rayon, mesh dirty sections off the main thread, incremental overlay meshing. (Coordinate maps already use the fast `CellHasher`, `octavis-core/hash.rs`.)
 - **Erode makes 45/90-degree patterns when repeated**: expected from the rule (it removes corners, so edges chamfer into planes). Possible later fix: randomness or a threshold option.
 - **Box select** needs a real fix: corners depend on hovering existing blocks (open-air fallback is only the anchor's horizontal plane). Needs a proper way to define two points in space (e.g. drag a base rectangle, then extrude height).
 - **Large sphere selections lag**: the selection overlay is rebuilt (temp world + meshing) every frame of a drag. Fix by incremental/cached overlay meshing or a cheaper overlay for big selections.
 - **Pencil**: Free mode's tap can still place several blocks (the new block becomes the hit surface). Strokes now use every mouse-move event and bisect the screen path until targets leave no gaps (`picking::trace_targets`), so results do not depend on frame rate and no world-space line is drawn; QA that fast strokes no longer phase through volumes.
-- **Unknown block names** (typos in patterns) create a new block type with a hash-derived placeholder colour, and export under that name (external tools show air or ignore it). The UI warns "Creates new block type". Real validation needs a block registry: plan is to read valid names from the texture pack folder's `blockstates/` at milestone 7.
+- **Unknown block names** (typos in patterns) create a new block type with a hash-derived placeholder colour, and export under that name (external tools show air or ignore it). The UI warns "Creates new block type". Real validation needs a block registry: plan is to read valid names from the texture pack folder's `blockstates/` at milestone 8.
 - **Selection overlay is meshed like solid blocks**: from inside a selection it is back-face culled like solid blocks. Not wrong, just noted; revisit if it confuses.
 - **No antialiasing** yet (eframe `multisampling` / MSAA pipeline sample counts). Deferred to a later patch.
 - Overlay depth: coplanar overlay faces use a pipeline depth bias (-8, slope -1.5) plus a 0.0005 lift; a larger lift made block edges peek through at exposed edges.
